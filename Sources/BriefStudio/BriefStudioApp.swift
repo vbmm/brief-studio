@@ -51,7 +51,6 @@ struct BriefStudioApp: App {
 private struct StudioWindow: View {
     @ObservedObject var studio: StudioModel
     @Binding var releaseRepository: String
-    @Environment(\.openURL) private var openURL
 
     var body: some View {
         NavigationSplitView {
@@ -116,17 +115,6 @@ private struct StudioWindow: View {
         .alert("Brief Studio", isPresented: Binding(get: { studio.notice != nil }, set: { if !$0 { studio.notice = nil } })) {
             Button("OK") { studio.notice = nil }
         } message: { Text(studio.notice ?? "") }
-        .alert("Ton forfait ChatGPT est connecté", isPresented: $studio.showsPlanWelcome) {
-            Button("Compris", action: studio.dismissWelcome)
-        } message: {
-            Text("Les générations éligibles utilisent ton forfait ChatGPT. Tu peux gérer cette utilisation dans les réglages de ChatGPT.")
-        }
-        .alert("Limite d’utilisation ChatGPT", isPresented: $studio.showsUsageLimit) {
-            Button("Gérer l’utilisation") { openURL(chatGPTUsage) }
-            Button("Fermer", role: .cancel) {}
-        } message: {
-            Text("Vérifie la limite du forfait ou de Brief Studio dans ChatGPT.")
-        }
     }
 
     private var accountBar: some View {
@@ -159,6 +147,60 @@ private func stamp(_ raw: String) -> String {
 }
 
 private let chatGPTUsage = URL(string: "https://chatgpt.com/settings/usage")!
+
+private struct AccountFeedback: View {
+    @ObservedObject var studio: StudioModel
+    @State private var copied = false
+
+    var body: some View {
+        if let url = studio.browserSignInURL {
+            VStack(alignment: .leading, spacing: 9) {
+                Label("Autorise Brief Studio sur la page OpenAI", systemImage: "safari")
+                    .font(.callout.weight(.semibold))
+                Text("Si aucun onglet ne s’ouvre, copie le lien et colle-le dans la barre d’adresse de Chrome. Il expire après trois minutes.")
+                    .font(.callout).foregroundStyle(.secondary)
+                HStack {
+                    Link("Ouvrir dans le navigateur", destination: url).buttonStyle(.borderedProminent)
+                    Button(copied ? "Lien copié" : "Copier le lien") {
+                        let pasteboard = NSPasteboard.general
+                        pasteboard.clearContents()
+                        copied = pasteboard.setString(url.absoluteString, forType: .string)
+                    }
+                }
+                .onChange(of: url, initial: true) { copied = false }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
+        }
+        if let error = studio.operationError {
+            HStack(alignment: .firstTextBaseline) {
+                Label(error, systemImage: "exclamationmark.circle")
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                Spacer()
+                Button("Fermer le message", systemImage: "xmark") { studio.dismissOperationError() }
+                    .labelStyle(.iconOnly).buttonStyle(.borderless)
+            }
+            .font(.callout)
+        }
+        if studio.showsPlanWelcome {
+            HStack {
+                Text("Les générations éligibles utilisent ton forfait ChatGPT.")
+                Spacer()
+                Button("Compris", action: studio.dismissWelcome)
+            }
+            .font(.callout)
+        }
+        if studio.showsUsageLimit {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Limite ChatGPT atteinte. Vérifie le forfait ou la limite de Brief Studio.")
+                Link("Gérer l’utilisation", destination: chatGPTUsage)
+            }
+            .font(.callout)
+        }
+    }
+}
 
 private struct SignInControls: View {
     @ObservedObject var studio: StudioModel
@@ -305,6 +347,7 @@ private struct Composer: View {
                 }
                 .disabled(studio.working != nil)
             }
+            AccountFeedback(studio: studio)
             Divider()
             HStack {
                 if let label = studio.working {
@@ -313,7 +356,7 @@ private struct Composer: View {
                 }
                 Spacer()
                 if studio.working != nil {
-                    Button("Annuler", action: studio.cancel)
+                    Button("Annuler", action: studio.cancel).keyboardShortcut(.cancelAction)
                 } else {
                     Button("Fermer") { dismiss() }.keyboardShortcut(.cancelAction)
                     Button("Générer", action: studio.generate)
@@ -356,12 +399,19 @@ private struct AccountPane: View {
             } else {
                 SignInControls(studio: studio)
             }
+            AccountFeedback(studio: studio)
             if let label = studio.working {
-                HStack { ProgressView().controlSize(.small); Text(label); Spacer(); Button("Annuler", action: studio.cancel) }
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text(label)
+                    Spacer()
+                    Button("Annuler", action: studio.cancel).keyboardShortcut(.cancelAction)
+                }
             }
-            HStack { Spacer(); Button("Fermer") { dismiss() }.keyboardShortcut(.cancelAction) }
+            HStack { Spacer(); Button("Fermer") { dismiss() }.disabled(studio.working != nil) }
         }
         .padding(24).frame(width: 420)
+        .interactiveDismissDisabled(studio.working != nil)
     }
 }
 

@@ -6,16 +6,28 @@ final class Loopback: @unchecked Sendable {
     private let queue = DispatchQueue(label: "BriefAuth.loopback")
     private let listener: NWListener
     private let expectedState: String
+    private let startupLimit: DispatchTimeInterval
+    private let callbackLimit: DispatchTimeInterval
     private var startReply: CheckedContinuation<UInt16, Error>?
     private var callbackReply: CheckedContinuation<OAuthProtocol.Callback, Error>?
     private var result: Result<OAuthProtocol.Callback, Error>?
     private var pendingConnections: [ObjectIdentifier: NWConnection] = [:]
 
-    init(state: String) throws {
+    init(
+        state: String,
+        startupLimit: DispatchTimeInterval = .seconds(8),
+        callbackLimit: DispatchTimeInterval = .seconds(180)
+    ) throws {
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
-        listener = try NWListener(using: parameters)
+        do {
+            listener = try NWListener(using: parameters)
+        } catch {
+            throw ChatGPTError.localListener
+        }
         expectedState = state
+        self.startupLimit = startupLimit
+        self.callbackLimit = callbackLimit
     }
 
     func start() async throws -> UInt16 {
@@ -31,8 +43,9 @@ final class Loopback: @unchecked Sendable {
                     self.listener.stateUpdateHandler = { [weak self] state in self?.receiveListenerState(state) }
                     self.listener.newConnectionHandler = { [weak self] connection in self?.receive(connection) }
                     self.listener.start(queue: self.queue)
-                    self.queue.asyncAfter(deadline: .now() + 180) { [weak self] in
-                        self?.finish(.failure(ChatGPTError.authorizationTimedOut))
+                    self.queue.asyncAfter(deadline: .now() + self.startupLimit) { [weak self] in
+                        guard let self, self.startReply != nil else { return }
+                        self.finish(.failure(ChatGPTError.localListener))
                     }
                 }
             }
@@ -60,11 +73,15 @@ final class Loopback: @unchecked Sendable {
     private func receiveListenerState(_ state: NWListener.State) {
         switch state {
         case .ready:
-            if let port = listener.port?.rawValue, port != 0 {
-                startReply?.resume(returning: port)
-                startReply = nil
-            } else {
+            guard let startReply else { return }
+            guard let port = listener.port?.rawValue, port != 0 else {
                 finish(.failure(ChatGPTError.localListener))
+                return
+            }
+            self.startReply = nil
+            startReply.resume(returning: port)
+            queue.asyncAfter(deadline: .now() + callbackLimit) { [weak self] in
+                self?.finish(.failure(ChatGPTError.authorizationTimedOut))
             }
         case .failed, .cancelled:
             finish(.failure(ChatGPTError.localListener))
@@ -111,12 +128,15 @@ final class Loopback: @unchecked Sendable {
             return
         }
         do {
-            let callback = try OAuthProtocol.Callback.parse(requestTarget: String(fields[1]), state: expectedState)
+            guard let callback = try OAuthProtocol.Callback.matching(
+                requestTarget: String(fields[1]), state: expectedState
+            ) else {
+                // Stray browser requests and mismatched state do not consume the attempt.
+                reply(to: connection, ok: false)
+                return
+            }
             reply(to: connection, ok: true)
             finish(.success(callback))
-        } catch ChatGPTError.invalidAuthorization {
-            // Stray browser requests and mismatched state do not consume the attempt.
-            reply(to: connection, ok: false)
         } catch {
             reply(to: connection, ok: false)
             finish(.failure(error))

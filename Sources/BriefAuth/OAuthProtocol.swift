@@ -58,21 +58,25 @@ enum OAuthProtocol {
         let code: String
         let clientID: String?
 
-        static func parse(requestTarget: String, state: String) throws -> Callback {
+        /// A request with our state is terminal, even when the provider's payload is malformed.
+        /// Anything else may be a browser probe or a prior attempt and leaves the listener open.
+        static func matching(requestTarget: String, state: String) throws -> Callback? {
             guard requestTarget.utf8.count <= 8192,
                   requestTarget.hasPrefix(callbackPath + "?"),
                   let url = URLComponents(string: "http://127.0.0.1" + requestTarget),
                   url.percentEncodedPath == callbackPath, url.fragment == nil else {
-                throw ChatGPTError.invalidAuthorization
+                return nil
             }
+            let items = url.queryItems ?? []
+            let states = items.filter { $0.name == "state" }
+            guard states.count == 1, states[0].value == state else { return nil }
             var parameters: [String: String] = [:]
-            for item in url.queryItems ?? [] where ["state", "code", "error", "client_id"].contains(item.name) {
+            for item in items where ["code", "error", "client_id"].contains(item.name) {
                 guard let value = item.value, !value.isEmpty,
                       parameters.updateValue(value, forKey: item.name) == nil else {
                     throw ChatGPTError.invalidAuthorization
                 }
             }
-            guard parameters["state"] == state else { throw ChatGPTError.invalidAuthorization }
             if let error = parameters["error"] {
                 throw error == "access_denied" ? ChatGPTError.authorizationDeclined : ChatGPTError.provider(400)
             }

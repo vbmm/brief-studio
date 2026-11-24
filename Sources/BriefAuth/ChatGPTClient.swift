@@ -14,9 +14,17 @@ public struct ChatGPTModel: Sendable, Identifiable {
     public let displayName: String
 }
 
+public enum ChatGPTSignInStage: Sendable {
+    case starting
+    case waitingForBrowser(URL)
+    case verifying
+}
+
+public typealias ChatGPTSignInProgress = @Sendable (ChatGPTSignInStage) async -> Void
+
 public enum ChatGPTError: LocalizedError, Equatable {
     case busy, signedOut, planNotGranted, authorizationDeclined, authorizationTimedOut
-    case invalidAuthorization, invalidIdentity, localListener, browserUnavailable
+    case invalidAuthorization, invalidIdentity, localListener, providerTimedOut
     case sessionExpired, revocationUnconfirmed, keychain(OSStatus), provider(Int)
     case usageLimit, modelUnavailable, incompleteResponse, emptyResponse
 
@@ -26,14 +34,17 @@ public enum ChatGPTError: LocalizedError, Equatable {
         case .signedOut: "Connectez-vous à ChatGPT pour utiliser cette fonction."
         case .planNotGranted: "Ce compte n’a pas autorisé l’utilisation de son forfait ChatGPT."
         case .authorizationDeclined: "La connexion ChatGPT a été refusée."
-        case .authorizationTimedOut: "La demande de connexion a expiré."
+        case .authorizationTimedOut:
+            "Le navigateur n’a pas renvoyé l’autorisation. Recommencez et terminez la connexion dans le navigateur."
         case .invalidAuthorization: "La réponse de connexion ChatGPT est invalide."
         case .invalidIdentity: "Impossible de vérifier l’identité du compte ChatGPT."
         case .localListener: "Impossible de recevoir la réponse du navigateur sur ce Mac."
-        case .browserUnavailable: "Impossible d’ouvrir le navigateur par défaut."
+        case .providerTimedOut: "OpenAI n’a pas répondu à temps. Vérifiez votre connexion puis réessayez."
         case .sessionExpired: "La session ChatGPT a expiré. Reconnectez-vous."
         case .revocationUnconfirmed:
             "Connexion effacée sur ce Mac. La révocation n’a pas été confirmée par OpenAI. Vous pouvez déconnecter l’app dans ChatGPT."
+        case let .keychain(status) where status == errSecInteractionNotAllowed || status == errSecAuthFailed:
+            "Le Trousseau macOS bloque l’accès à la session. Déverrouillez le trousseau de session puis réessayez."
         case .keychain: "Le Trousseau macOS n’a pas pu enregistrer ou lire la connexion."
         case let .provider(status): "OpenAI a renvoyé une erreur (HTTP \(status))."
         case .usageLimit: "Le forfait de ce compte est indisponible ou sa limite d’utilisation est atteinte."
@@ -51,18 +62,26 @@ public actor ChatGPTClient {
     private let appName: String
     private let keychain: Keychain
     private let session: URLSession
+    private let accountSession: URLSession
     private var busy = false
 
     public init(appName: String = "Brief Studio") {
         self.appName = appName
-        keychain = Keychain(service: (Bundle.main.bundleIdentifier ?? "com.briefmac.local") + ".siwc")
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.briefmac.local"
+        keychain = Keychain(service: KeychainNamespace.current(bundleID: bundleID))
+        session = Self.makeSession(requestTimeout: 75, resourceTimeout: 600)
+        accountSession = Self.makeSession(requestTimeout: 15, resourceTimeout: 25)
+    }
+
+    private static func makeSession(requestTimeout: TimeInterval, resourceTimeout: TimeInterval) -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpShouldSetCookies = false
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.timeoutIntervalForRequest = 75
-        configuration.timeoutIntervalForResource = 600
-        session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+        configuration.waitsForConnectivity = false
+        configuration.timeoutIntervalForRequest = requestTimeout
+        configuration.timeoutIntervalForResource = resourceTimeout
+        return URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
     }
 
     public func signedInProfile() async throws -> ChatGPTProfile? {
@@ -76,17 +95,17 @@ public actor ChatGPTClient {
     }
 
     /// Signs in with the current or most recent registration if there is one.
-    public func signIn() async throws -> ChatGPTProfile {
-        try await authorize(clientID: readState().selected, createNew: false)
+    public func signIn(progress: ChatGPTSignInProgress = { _ in }) async throws -> ChatGPTProfile {
+        try await authorize(selection: .current, progress: progress)
     }
 
     /// Prompts for a separate account or workspace registration.
-    public func addAccount() async throws -> ChatGPTProfile {
-        try await authorize(clientID: nil, createNew: true)
+    public func addAccount(progress: ChatGPTSignInProgress = { _ in }) async throws -> ChatGPTProfile {
+        try await authorize(selection: .new, progress: progress)
     }
 
     /// Selects an existing registration and reauthorizes it if needed.
-    public func useProfile(id: String) async throws -> ChatGPTProfile {
+    public func useProfile(id: String, progress: ChatGPTSignInProgress = { _ in }) async throws -> ChatGPTProfile {
         try begin()
         let saved: Account
         do {
@@ -106,28 +125,49 @@ public actor ChatGPTClient {
             throw error
         }
         busy = false
-        return try await authorize(clientID: saved.clientID, createNew: false)
+        return try await authorize(selection: .saved(saved.clientID), progress: progress)
     }
 
-    private func authorize(clientID: String?, createNew: Bool) async throws -> ChatGPTProfile {
+    private enum SignInSelection {
+        case current, new, saved(String)
+    }
+
+    private func authorize(selection: SignInSelection, progress: ChatGPTSignInProgress) async throws -> ChatGPTProfile {
         try begin()
         defer { busy = false }
 
-        var state = try readState()
-        // Persist a pseudonymous host ID even if this first attempt is cancelled.
-        try keychain.save(state)
-        let old = createNew ? nil : state.accounts.first(where: { $0.clientID == clientID })
+        await progress(.starting)
+        try Task.checkCancellation()
+        var state = try keychain.load() ?? SessionState(hostID: Self.localHostID())
+        let clientID: String? = switch selection {
+        case .current: state.selected
+        case .new: nil
+        case let .saved(id): id
+        }
+        let old = state.accounts.first(where: { $0.clientID == clientID })
         let draft = try OAuthProtocol.Attempt(port: 0)
         let listener = try Loopback(state: draft.state)
         defer { listener.cancel() }
         let port = try await listener.start()
         let attempt = OAuthProtocol.Attempt(port: port, state: draft.state, nonce: draft.nonce, verifier: draft.verifier)
+        // The URL can be reopened or copied by the user. Omit credential/identity hints.
         let browserURL = try attempt.authorizationURL(appName: appName, hostID: state.hostID,
-                                                       clientID: old?.clientID, identityHint: old?.tokens?.idToken)
+                                                       clientID: old?.clientID, identityHint: nil)
+        await progress(.waitingForBrowser(browserURL))
         try Task.checkCancellation()
-        let opened = await MainActor.run { NSWorkspace.shared.open(browserURL) }
-        guard opened else { throw ChatGPTError.browserUnavailable }
+        let launch = Task { @MainActor in
+            guard !Task.isCancelled else { return }
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            // The local listener remains open on failure so the user can use
+            // the URL from the waiting stage in another browser.
+            _ = try? await NSWorkspace.shared.open(browserURL, configuration: configuration)
+        }
+        defer { launch.cancel() }
         let callback = try await listener.callback()
+        try Task.checkCancellation()
+        await progress(.verifying)
+        try Task.checkCancellation()
         let issuedID = try callback.resolveClientID(existing: old?.clientID)
         let reply: TokenReply = try await formPost(OAuthProtocol.token, [
             ("grant_type", "authorization_code"), ("client_id", issuedID), ("code", callback.code),
@@ -166,7 +206,7 @@ public actor ChatGPTClient {
                 ], timeout: 10)
                 for attempt in 0..<2 {
                     do {
-                        let (_, response) = try await session.data(for: request)
+                        let (_, response) = try await accountSession.data(for: request)
                         let status = (response as? HTTPURLResponse)?.statusCode
                         if status == 200 { revoked = true; break }
                         guard let status, (500..<600).contains(status) else { break }
@@ -234,6 +274,18 @@ public actor ChatGPTClient {
         try keychain.load() ?? SessionState()
     }
 
+    /// The identifier describes this install and is never a credential.
+    private static func localHostID() -> String {
+        let preferences = UserDefaults.standard
+        let key = "BriefAuthHostUUID"
+        if let saved = preferences.string(forKey: key), let uuid = UUID(uuidString: saved) {
+            return "urn:uuid:" + uuid.uuidString.lowercased()
+        }
+        let fresh = UUID().uuidString.lowercased()
+        preferences.set(fresh, forKey: key)
+        return "urn:uuid:" + fresh
+    }
+
     private func authorizedTokens() async throws -> SessionTokens {
         var state = try readState()
         guard var account = state.active, let tokens = account.tokens else { throw ChatGPTError.signedOut }
@@ -263,16 +315,16 @@ public actor ChatGPTClient {
     }
 
     private func get<T: Decodable>(_ url: URL, bearer: String? = nil) async throws -> T {
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: url, timeoutInterval: 15)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let bearer { request.setValue("Bearer " + bearer, forHTTPHeaderField: "Authorization") }
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await accountData(for: request)
         try Self.checkHTTP(response, body: data)
         return try JSONDecoder().decode(T.self, from: data)
     }
 
     private func formPost<T: Decodable>(_ url: URL, _ values: [(String, String)]) async throws -> T {
-        let (data, response) = try await session.data(for: formRequest(url, values))
+        let (data, response) = try await accountData(for: formRequest(url, values))
         if (response as? HTTPURLResponse)?.statusCode == 400,
            (try? JSONDecoder().decode(OAuthFailure.self, from: data).error) == "invalid_grant" {
             throw ChatGPTError.sessionExpired
@@ -281,7 +333,15 @@ public actor ChatGPTClient {
         return try JSONDecoder().decode(T.self, from: data)
     }
 
-    private func formRequest(_ url: URL, _ values: [(String, String)], timeout: TimeInterval = 30) -> URLRequest {
+    private func accountData(for request: URLRequest) async throws -> (Data, URLResponse) {
+        do {
+            return try await accountSession.data(for: request)
+        } catch let error as URLError where error.code == .timedOut {
+            throw ChatGPTError.providerTimedOut
+        }
+    }
+
+    private func formRequest(_ url: URL, _ values: [(String, String)], timeout: TimeInterval = 15) -> URLRequest {
         var request = URLRequest(url: url, timeoutInterval: timeout)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
@@ -400,10 +460,12 @@ private struct SessionState: Codable {
 }
 
 private struct Keychain {
-    let service: String
+    let service: String?
+    private static let interactionLock = NSLock()
 
-    private var query: [String: Any] {
-        [
+    private func query() throws -> [String: Any] {
+        guard let service else { throw ChatGPTError.keychain(errSecNotAvailable) }
+        return [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: "local-accounts-v1",
@@ -412,11 +474,11 @@ private struct Keychain {
     }
 
     func load() throws -> SessionState? {
-        var options = query
+        var options = try query()
         options[kSecReturnData as String] = true
         options[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
-        let status = SecItemCopyMatching(options as CFDictionary, &result)
+        let status = try Self.withoutInteraction { SecItemCopyMatching(options as CFDictionary, &result) }
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = result as? Data else { throw ChatGPTError.keychain(status) }
         return try JSONDecoder().decode(SessionState.self, from: data)
@@ -424,13 +486,33 @@ private struct Keychain {
 
     func save(_ state: SessionState) throws {
         let data = try JSONEncoder().encode(state)
+        let query = try query()
         let changes = [kSecValueData as String: data]
-        var status = SecItemUpdate(query as CFDictionary, changes as CFDictionary)
-        if status == errSecItemNotFound {
+        let status = try Self.withoutInteraction {
+            let updated = SecItemUpdate(query as CFDictionary, changes as CFDictionary)
+            guard updated == errSecItemNotFound else { return updated }
             var attributes = query
             attributes[kSecValueData as String] = data
-            status = SecItemAdd(attributes as CFDictionary, nil)
+            return SecItemAdd(attributes as CFDictionary, nil)
         }
         guard status == errSecSuccess else { throw ChatGPTError.keychain(status) }
+    }
+
+    /// The file-based Keychain honours the legacy process UI policy for ACL
+    /// prompts. Change it only while a local storage operation is in progress.
+    private static func withoutInteraction<T>(_ body: () -> T) throws -> T {
+        interactionLock.lock()
+        defer { interactionLock.unlock() }
+        var original = DarwinBoolean(false)
+        let read = SecKeychainGetUserInteractionAllowed(&original)
+        guard read == errSecSuccess else { throw ChatGPTError.keychain(read) }
+        if original.boolValue {
+            let disabled = SecKeychainSetUserInteractionAllowed(false)
+            guard disabled == errSecSuccess else { throw ChatGPTError.keychain(disabled) }
+        }
+        defer {
+            if original.boolValue { SecKeychainSetUserInteractionAllowed(true) }
+        }
+        return body()
     }
 }

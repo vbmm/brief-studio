@@ -3,6 +3,17 @@ import Testing
 @testable import BriefAuth
 
 struct ChatGPTAuthTests {
+    @Test func credentialNamespaceIsStableForATeamAndIsolatesAdHocBuilds() {
+        let id = "app.briefstudio.macos"
+        let old = Data([0xab, 0x01])
+        let newer = Data([0xcd, 0x02])
+        #expect(KeychainNamespace.service(bundleID: id, teamID: "TEAM", codeHash: old) == id + ".siwc.team.TEAM")
+        #expect(KeychainNamespace.service(bundleID: id, teamID: "TEAM", codeHash: newer) == id + ".siwc.team.TEAM")
+        #expect(KeychainNamespace.service(bundleID: id, teamID: nil, codeHash: old) == id + ".siwc.beta.ab01")
+        #expect(KeychainNamespace.service(bundleID: id, teamID: nil, codeHash: newer) == id + ".siwc.beta.cd02")
+        #expect(KeychainNamespace.service(bundleID: id, teamID: nil, codeHash: nil) == nil)
+    }
+
     @Test func dynamicRegistrationUsesSeparateArtifactIdentityAndPKCE() throws {
         let attempt = OAuthProtocol.Attempt(
             port: 54_321, state: "fixture-state", nonce: "fixture-nonce",
@@ -40,9 +51,10 @@ struct ChatGPTAuthTests {
 
     @Test func callbackRequiresExactPathAndSingleMatchingState() throws {
         let state = "random-test-state"
-        let accepted = try OAuthProtocol.Callback.parse(
+        let matched = try OAuthProtocol.Callback.matching(
             requestTarget: "/auth/callback?code=abc%2B123&state=\(state)&client_id=oaiapp_example", state: state
         )
+        let accepted = try #require(matched)
         #expect(accepted.code == "abc+123")
         #expect(try accepted.resolveClientID(existing: nil) == "oaiapp_example")
         #expect(throws: ChatGPTError.invalidAuthorization) {
@@ -51,16 +63,58 @@ struct ChatGPTAuthTests {
         for target in [
             "/auth/callback?code=one&state=wrong",
             "/auth/callback?code=one&state=\(state)&state=\(state)",
-            "/auth/callback?code=one&code=two&state=\(state)",
             "/auth/callback/elsewhere?code=one&state=\(state)",
             "/auth/callback?code=one&state=\(state)#fragment",
         ] {
+            #expect(try OAuthProtocol.Callback.matching(requestTarget: target, state: state) == nil)
+        }
+        for malformed in ["/auth/callback?code=one&code=two&state=\(state)", "/auth/callback?state=\(state)"] {
             #expect(throws: ChatGPTError.invalidAuthorization) {
-                try OAuthProtocol.Callback.parse(requestTarget: target, state: state)
+                try OAuthProtocol.Callback.matching(requestTarget: malformed, state: state)
             }
         }
         #expect(throws: ChatGPTError.authorizationDeclined) {
-            try OAuthProtocol.Callback.parse(requestTarget: "/auth/callback?error=access_denied&state=\(state)", state: state)
+            try OAuthProtocol.Callback.matching(requestTarget: "/auth/callback?error=access_denied&state=\(state)", state: state)
+        }
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["BRIEF_TEST_LOOPBACK"] == "1"))
+    func browserWithoutCallbackHasDeadline() async throws {
+        let listener = try Loopback(state: "unreturned", callbackLimit: .milliseconds(75))
+        defer { listener.cancel() }
+        _ = try await listener.start()
+        await #expect(throws: ChatGPTError.authorizationTimedOut) {
+            try await listener.callback()
+        }
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["BRIEF_TEST_LOOPBACK"] == "1"))
+    func cancellingBrowserWaitStopsTheLocalListener() async throws {
+        let listener = try Loopback(state: "cancelled", callbackLimit: .seconds(3))
+        defer { listener.cancel() }
+        _ = try await listener.start()
+        let wait = Task { try await listener.callback() }
+        wait.cancel()
+        await #expect(throws: CancellationError.self) {
+            try await wait.value
+        }
+        await #expect(throws: CancellationError.self) {
+            try await listener.callback()
+        }
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["BRIEF_TEST_LOOPBACK"] == "1"))
+    func malformedMatchingCallbackTerminatesWithoutBrowserTimeout() async throws {
+        let listener = try Loopback(state: "fixture", callbackLimit: .seconds(3))
+        defer { listener.cancel() }
+        let port = try await listener.start()
+        let invalidCallback = URL(string: "http://127.0.0.1:\(port)/auth/callback?state=fixture")!
+        let (_, response) = try await URLSession.shared.data(
+            for: URLRequest(url: invalidCallback, timeoutInterval: 3)
+        )
+        #expect((response as? HTTPURLResponse)?.statusCode == 400)
+        await #expect(throws: ChatGPTError.invalidAuthorization) {
+            try await listener.callback()
         }
     }
 

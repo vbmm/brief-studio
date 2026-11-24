@@ -26,6 +26,8 @@ final class StudioModel: ObservableObject {
     @Published var showsPlanWelcome = false
     @Published var showsUsageLimit = false
     @Published private(set) var working: String?
+    @Published private(set) var browserSignInURL: URL?
+    @Published private(set) var operationError: String?
     @Published private(set) var update: ReleaseUpdates.Available?
     @Published private(set) var updateStatus = ""
     @Published private(set) var checkingUpdate = false
@@ -69,15 +71,36 @@ final class StudioModel: ObservableObject {
     }
 
     func signIn(newAccount: Bool = false) {
-        begin("Connexion à ChatGPT…") { [self] in
-            let selected = newAccount ? try await account.addAccount() : try await account.signIn()
+        begin("Préparation de la connexion…") { [self] in
+            let progress = signInProgress
+            let selected = newAccount ? try await account.addAccount(progress: progress)
+                : try await account.signIn(progress: progress)
             try await didConnect(selected)
         }
     }
 
     func selectProfile(_ id: String) {
-        begin("Connexion à ChatGPT…") { [self] in
-            try await didConnect(account.useProfile(id: id))
+        begin("Préparation de la connexion…") { [self] in
+            try await didConnect(account.useProfile(id: id, progress: signInProgress))
+        }
+    }
+
+    private var signInProgress: ChatGPTSignInProgress {
+        { [weak self] stage in await self?.showSignInStage(stage) }
+    }
+
+    private func showSignInStage(_ stage: ChatGPTSignInStage) {
+        guard !Task.isCancelled else { return }
+        switch stage {
+        case .starting:
+            browserSignInURL = nil
+            working = "Préparation de la connexion…"
+        case let .waitingForBrowser(url):
+            browserSignInURL = url
+            working = "En attente du navigateur…"
+        case .verifying:
+            browserSignInURL = nil
+            working = "Vérification de l’autorisation…"
         }
     }
 
@@ -87,6 +110,7 @@ final class StudioModel: ObservableObject {
         models = []
         selectedModel = ""
         if selected.canUsePlan {
+            working = "Chargement des modèles…"
             let hasSeenWelcome = UserDefaults.standard.bool(forKey: "briefPlanWelcome")
             if !hasSeenWelcome { showsPlanWelcome = true }
             try await loadModels()
@@ -142,7 +166,14 @@ final class StudioModel: ObservableObject {
         }
     }
 
-    func cancel() { operation?.cancel() }
+    func cancel() {
+        guard let operation else { return }
+        browserSignInURL = nil
+        working = "Annulation…"
+        operation.cancel()
+    }
+
+    func dismissOperationError() { operationError = nil }
 
     func openFile() {
         let picker = NSOpenPanel()
@@ -187,13 +218,15 @@ final class StudioModel: ObservableObject {
 
     private func begin(_ label: String, work: @escaping @MainActor () async throws -> Void) {
         guard operation == nil else { return }
+        operationError = nil
+        showsUsageLimit = false
         working = label
         operation = Task {
-            defer { working = nil; operation = nil }
+            defer { browserSignInURL = nil; working = nil; operation = nil }
             do { try await work() }
             catch is CancellationError {}
             catch ChatGPTError.usageLimit { showsUsageLimit = true }
-            catch { if !Task.isCancelled { notice = error.localizedDescription } }
+            catch { if !Task.isCancelled { operationError = error.localizedDescription } }
         }
     }
 
