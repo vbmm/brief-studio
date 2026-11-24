@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="color-scheme" content="light">
+  <title>Brief NQ / ES</title>
+  <style>
+    :root {
+      --ink: #182421;
+      --muted: #4c6259;
+      --accent: #075e4e;
+      --accent-deep: #123d33;
+      --paper: #faf9f3;
+      --line: #d5ddd4;
+      --wash: #e8efe7;
+      --mono: "SFMono-Regular", Consolas, monospace;
+      --serif: Georgia, "Times New Roman", serif;
+      --sans: "Segoe UI", "Helvetica Neue", sans-serif;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body { margin: 0; color: var(--ink); background: var(--paper); font: 1rem/1.65 var(--sans); }
+    button, label[for] { font: inherit; }
+    a { color: var(--accent); text-underline-offset: .16em; }
+    :focus-visible { outline: 2px solid #0a7561; outline-offset: 4px; }
+    [hidden] { display: none !important; }
+    .skip { position: fixed; z-index: 3; left: 1rem; top: -4rem; background: var(--paper); padding: .45rem .8rem; }
+    .skip:focus { top: 1rem; }
+    .masthead { background: var(--accent-deep); color: #f4f8f1; }
+    .masthead-inner {
+      max-width: 77rem; padding: .95rem clamp(1rem, 4vw, 3rem); margin: auto;
+      display: flex; flex-wrap: wrap; gap: 1rem; justify-content: space-between; align-items: center;
+    }
+    .wordmark { display: flex; align-items: center; gap: .75rem; font-weight: 670; letter-spacing: .015em; }
+    .wordmark-index { font: 600 .78rem/1 var(--mono); letter-spacing: .07em; color: #def7e9; border: 1px solid #568576; padding: .45rem .5rem; }
+    .actions { display: flex; align-items: center; flex-wrap: wrap; gap: .55rem; }
+    .action {
+      display: inline-flex; align-items: center; border: 1px solid #6c9286;
+      border-radius: .25rem; background: transparent; color: inherit;
+      cursor: pointer; padding: .36rem .8rem; font-size: .9rem;
+    }
+    .action:hover { background: #26594a; }
+    .action:focus-visible { outline-color: #c0ffe4; }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; clip-path: inset(50%); overflow: hidden; }
+    .masthead .visually-hidden:focus-visible + .action { outline: 2px solid #c0ffe4; outline-offset: 4px; }
+    main { max-width: 77rem; padding: 0 clamp(1rem, 4vw, 3rem) 5rem; margin: auto; }
+    .intro { padding: clamp(2.3rem, 6vw, 4.35rem) 0 clamp(1.7rem, 3vw, 2.55rem); border-bottom: 2px solid var(--ink); }
+    .date { color: var(--accent); font: 600 .82rem/1.4 var(--mono); }
+    h1, h2 { font-family: var(--serif); font-weight: 400; letter-spacing: -.035em; }
+    h1 { font-size: clamp(2.4rem, 6vw, 5.15rem); line-height: 1.03; margin: .5rem 0 .1rem; max-width: 20ch; overflow-wrap: anywhere; }
+    .status { color: var(--muted); font-size: .91rem; margin: 1rem 0 0; }
+    .status.error { color: #9a3024; }
+    .empty { max-width: 38rem; margin-top: 1.8rem; }
+    .empty p { margin: 0 0 1rem; }
+    .reading { display: grid; grid-template-columns: clamp(11rem, 20vw, 16rem) minmax(0, 1fr); gap: clamp(2.25rem, 5vw, 5rem); }
+    .reading.without-contents { grid-template-columns: minmax(0, 1fr); }
+    .rail { padding-top: 1.85rem; }
+    .rail nav { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow-y: auto; padding: .1rem .45rem .5rem 0; }
+    .rail h2 { font: 650 .77rem/1.5 var(--mono); letter-spacing: .105em; text-transform: uppercase; color: var(--muted); margin: 0 0 .4rem; }
+    #section-links { margin: 0; padding: 0; list-style: none; }
+    #section-links > li { border-bottom: 1px solid var(--line); }
+    #section-links a { display: block; padding: .47rem 0; color: var(--ink); font-size: .83rem; line-height: 1.3; text-decoration: none; overflow-wrap: anywhere; }
+    #section-links a:hover { color: var(--accent); text-decoration: underline; }
+    #body { min-width: 0; max-width: 48rem; padding-top: 1.2rem; overflow-wrap: anywhere; }
+    #body > h2 { border-top: 1px solid var(--line); padding-top: 1.55rem; margin: 2.25rem 0 .9rem; font-size: clamp(1.46rem, 3.4vw, 2.18rem); line-height: 1.11; }
+    #body > h2:first-child { margin-top: .45rem; border-top: 0; padding-top: 0; }
+    #body h3, #body h4 { margin: 1.5rem 0 .3rem; font-weight: 650; line-height: 1.35; }
+    #body p { margin: .65rem 0 1.1rem; }
+    #body ul, #body ol { padding-left: 1.45rem; margin: .65rem 0 1.1rem; }
+    #body li + li { margin-top: .18rem; }
+    #body h2[id] { scroll-margin-top: .8rem; }
+    #body blockquote { border-left: 3px solid #76a38f; padding: .5rem .9rem; background: var(--wash); margin: 1rem 0; white-space: pre-wrap; }
+    #body code, #body pre { font-family: var(--mono); font-size: .86em; background: var(--wash); }
+    #body code { padding: .06rem .24rem; }
+    #body pre { padding: .75rem; white-space: pre-wrap; }
+    #body pre code { padding: 0; font-size: inherit; }
+    #body hr { border: 0; border-top: 1px solid var(--line); margin: 1.7rem 0; }
+    .table-wrap { overflow-x: auto; margin: 1rem 0; }
+    #body table { border-collapse: collapse; min-width: 100%; font-size: .91rem; }
+    #body th, #body td { border-bottom: 1px solid var(--line); padding: .5rem .6rem; text-align: left; vertical-align: top; }
+    #body th { background: var(--wash); }
+    @media (max-width: 47rem) {
+      .reading { display: block; }
+      .rail { padding-top: .85rem; }
+      .rail nav { position: static; max-height: 9rem; }
+      #section-links { display: flex; flex-wrap: wrap; gap: .26rem .85rem; }
+      #section-links > li { border: 0; }
+      #section-links a { text-decoration: underline; }
+    }
+    @media print {
+      body { background: white; color: black; font-size: 10.5pt; }
+      .masthead, .rail, .skip, .status, .empty { display: none !important; }
+      main { padding: 0; }
+      .intro { padding: 0 0 .5rem; }
+      h1 { font-size: 27pt; }
+      .reading { display: block; }
+      #body { max-width: none; }
+      #body h2, #body h3 { break-after: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#brief">Aller au brief</a>
+  <header class="masthead">
+    <div class="masthead-inner">
+      <div class="wordmark"><span class="wordmark-index">NQ / ES</span><span>Brief marché</span></div>
+      <div class="actions">
+        <input class="visually-hidden" id="file" type="file" accept=".json,.md,application/json,text/markdown" aria-label="Ouvrir un brief">
+        <label for="file" class="action">Ouvrir un brief</label>
+        <button class="action" type="button" id="print" hidden>Imprimer</button>
+      </div>
+    </div>
+  </header>
+  <main id="brief" tabindex="-1">
+    <div class="intro">
+      <time class="date" id="date" hidden></time>
+      <h1 id="title">Brief de marché</h1>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+    </div>
+    <div class="empty" id="empty">
+      <p>Ouvre un fichier de brief (.json ou .md) pour le lire dans ce navigateur.</p>
+      <p>Un brief partagé au format HTML s’affiche dès l’ouverture du fichier.</p>
+    </div>
+    <div class="reading" id="reading" hidden>
+      <aside class="rail" id="rail" hidden>
+        <nav aria-labelledby="contents-title">
+          <h2 id="contents-title">Sommaire</h2>
+          <ul id="section-links"></ul>
+        </nav>
+      </aside>
+      <article id="body" aria-labelledby="title"></article>
+    </div>
+  </main>
+  <script id="embedded-brief" type="application/octet-stream">__EMBEDDED_BRIEF_BASE64__</script>
+  <script>
+    "use strict";
+
+    const schema = "nq-es-brief/v1";
+    const sizeLimit = 1024 * 1024;
+    const $ = (id) => document.getElementById(id);
+    const make = (tag, text) => {
+      const element = document.createElement(tag);
+      if (text !== undefined) element.textContent = text;
+      return element;
+    };
+
+    function safeLink(href) {
+      try {
+        const parsed = new URL(href);
+        if (parsed.protocol === "https:" && !parsed.username && !parsed.password) return parsed.href;
+      } catch { /* Display the label when the input is not a safe, absolute URL. */ }
+      return null;
+    }
+
+    function anchor(label, href) {
+      const safe = safeLink(href);
+      if (!safe) return document.createTextNode(label);
+      const link = make("a", label);
+      link.href = safe;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      return link;
+    }
+
+    function addInline(element, text) {
+      // Treat raw HTML as literal text. Build all markup with fixed tag names.
+      const tokens = /(!)?\[([^\]\n]+)\]\(([^\s<>)]+)\)|\*\*([^*\n]+)\*\*|`([^`\n]+)`|(https:\/\/[^\s<>()\]]+)/g;
+      let previous = 0;
+      for (const match of text.matchAll(tokens)) {
+        element.append(text.slice(previous, match.index));
+        if (match[1]) element.append(match[2]); // Images are never fetched.
+        else if (match[2]) element.append(anchor(match[2], match[3]));
+        else if (match[4]) element.append(make("strong", match[4]));
+        else if (match[5]) element.append(make("code", match[5]));
+        else {
+          const url = match[6].replace(/[.,;:!?]+$/, "");
+          element.append(anchor(url, url), match[6].slice(url.length));
+        }
+        previous = match.index + match[0].length;
+      }
+      element.append(text.slice(previous));
+    }
+
+    function formatted(tag, text) {
+      const element = make(tag);
+      addInline(element, text);
+      return element;
+    }
+
+    function renderMarkdown(markdown) {
+      const article = document.createDocumentFragment();
+      const contents = document.createDocumentFragment();
+      const lines = markdown.replace(/\r\n?/g, "\n").trimStart().split("\n");
+      if (/^#\s/.test(lines[0])) lines.shift(); // The title is shown above the article.
+      const listItem = /^\s*(?:([-*+•])|(\d+)\.)\s+(.+)$/;
+      const heading = /^(#{1,6})\s+(.+)$/;
+      const divider = /^(?:-{3,}|\*{3,}|_{3,})$/;
+      const cells = (line) => line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
+      const isTable = (at) => lines[at]?.trim().startsWith("|")
+        && cells(lines[at + 1] || "").every((cell) => /^:?-{3,}:?$/.test(cell));
+      const isBlock = (at) => {
+        const line = lines[at];
+        return !line?.trim() || heading.test(line) || listItem.test(line) || divider.test(line.trim())
+          || line.startsWith(">") || line.startsWith("```") || isTable(at);
+      };
+
+      let i = 0;
+      let section = 0;
+      while (i < lines.length) {
+        const line = lines[i];
+        const parsedHeading = line.match(heading);
+        const item = line.match(listItem);
+        if (!line.trim()) {
+          i++;
+        } else if (parsedHeading) {
+          const level = Math.max(2, Math.min(4, parsedHeading[1].length));
+          const title = formatted("h" + level, parsedHeading[2]);
+          if (level === 2) {
+            title.id = "section-" + (++section);
+            title.tabIndex = -1;
+            const link = make("a", title.textContent);
+            link.href = "#" + title.id;
+            const li = make("li");
+            li.append(link);
+            contents.append(li);
+          }
+          article.append(title);
+          i++;
+        } else if (listItem.test(line)) {
+          const ordered = Boolean(item[2]);
+          const list = make(ordered ? "ol" : "ul");
+          if (ordered) list.start = Number(item[2]);
+          let next;
+          while ((next = lines[i]?.match(listItem)) && Boolean(next[2]) === ordered) {
+            list.append(formatted("li", next[3]));
+            i++;
+          }
+          article.append(list);
+        } else if (divider.test(line.trim())) {
+          article.append(make("hr"));
+          i++;
+        } else if (line.startsWith(">")) {
+          const quote = [];
+          while (lines[i]?.startsWith(">")) quote.push(lines[i++].replace(/^>\s?/, ""));
+          article.append(formatted("blockquote", quote.join("\n")));
+        } else if (line.startsWith("```")) {
+          const code = [];
+          i++;
+          while (i < lines.length && !lines[i].startsWith("```")) code.push(lines[i++]);
+          if (i < lines.length) i++;
+          const pre = make("pre");
+          pre.append(make("code", code.join("\n")));
+          article.append(pre);
+        } else if (isTable(i)) {
+          const table = make("table");
+          const head = table.createTHead().insertRow();
+          for (const cell of cells(line)) {
+            const th = formatted("th", cell);
+            th.scope = "col";
+            head.append(th);
+          }
+          i += 2;
+          const body = table.createTBody();
+          while (lines[i]?.trim().startsWith("|")) {
+            const row = body.insertRow();
+            for (const cell of cells(lines[i++])) row.append(formatted("td", cell));
+          }
+          const wrapper = make("div");
+          wrapper.className = "table-wrap";
+          wrapper.append(table);
+          article.append(wrapper);
+        } else {
+          const para = [line];
+          i++;
+          while (!isBlock(i)) para.push(lines[i++]);
+          article.append(formatted("p", para.join(" ")));
+        }
+      }
+      return { article, contents };
+    }
+
+    function validate(value) {
+      if (!value || value.schema !== schema || typeof value.title !== "string"
+        || !value.title.trim() || value.title.length > 240 || typeof value.text !== "string"
+        || !value.text.trim() || value.text.length > sizeLimit) {
+        throw new Error("Format de brief non reconnu.");
+      }
+      if (value.generatedAt !== undefined && typeof value.generatedAt !== "string") {
+        throw new Error("Date du brief non valide.");
+      }
+      return value;
+    }
+
+    function show(value, message = "") {
+      const brief = validate(value);
+      const { article, contents } = renderMarkdown(brief.text);
+      const sources = Array.isArray(brief.sources) ? brief.sources.slice(0, 100).filter(
+        (source) => typeof source?.label === "string" && source.label.trim()
+          && source.label.length <= 240 && typeof source.url === "string"
+          && source.url.length <= 2048 && safeLink(source.url)
+      ) : [];
+      if (sources.length) {
+        const heading = make("h2", "Sources");
+        heading.id = "brief-sources";
+        heading.tabIndex = -1;
+        const entry = make("li");
+        const link = make("a", "Sources");
+        link.href = "#" + heading.id;
+        entry.append(link);
+        contents.append(entry);
+        const list = make("ul");
+        for (const source of sources) {
+          const item = make("li");
+          item.append(anchor(source.label, source.url));
+          list.append(item);
+        }
+        article.append(heading, list);
+      }
+      $("title").textContent = brief.title;
+      document.title = brief.title;
+      const date = new Date(brief.generatedAt || "");
+      $("date").hidden = Number.isNaN(date.getTime());
+      if (!$("date").hidden) {
+        $("date").dateTime = date.toISOString();
+        $("date").textContent = new Intl.DateTimeFormat("fr-FR", { dateStyle: "long" }).format(date);
+      }
+      $("rail").hidden = !contents.childNodes.length;
+      $("section-links").replaceChildren(contents);
+      $("body").replaceChildren(article);
+      $("reading").classList.toggle("without-contents", $("rail").hidden);
+      $("empty").hidden = true;
+      $("reading").hidden = false;
+      $("print").hidden = false;
+      status(message);
+    }
+
+    function status(message = "", error = false) {
+      $("status").textContent = message;
+      $("status").hidden = !message;
+      $("status").classList.toggle("error", error);
+    }
+
+    $("print").addEventListener("click", () => window.print());
+    let importSequence = 0;
+    $("file").addEventListener("change", async (event) => {
+      const file = event.target.files[0];
+      event.target.value = "";
+      if (!file) return;
+      const sequence = ++importSequence;
+      try {
+        if (file.size > sizeLimit) throw new Error("Le fichier dépasse 1 Mo.");
+        const text = await file.text();
+        if (sequence !== importSequence) return;
+        const value = /\.md$/i.test(file.name)
+          ? { schema, title: text.trimStart().match(/^#\s+([^\n\r]+)/)?.[1] || file.name.replace(/\.md$/i, ""), text }
+          : JSON.parse(text);
+        show(value, "Brief ouvert.");
+        $("brief").focus();
+      } catch (error) {
+        if (sequence !== importSequence) return;
+        status(error instanceof SyntaxError ? "Ce fichier ne contient pas un brief valide." : error.message, true);
+      }
+    });
+
+    const embedded = $("embedded-brief").textContent.trim();
+    if (embedded && /^[A-Za-z0-9+/]+={0,2}$/.test(embedded)) {
+      try {
+        if (embedded.length > Math.ceil(sizeLimit / 3) * 4) throw new Error("Le brief dépasse 1 Mo.");
+        const bytes = Uint8Array.from(atob(embedded), (character) => character.charCodeAt(0));
+        show(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+      } catch {
+        status("Le brief intégré ne peut pas être lu.", true);
+      }
+    }
+  </script>
+</body>
+</html>
