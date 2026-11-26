@@ -1,4 +1,5 @@
 import AppKit
+import BriefAuth
 import BriefCore
 import SwiftUI
 
@@ -157,10 +158,11 @@ private struct AccountFeedback: View {
             VStack(alignment: .leading, spacing: 9) {
                 Label("Autorise Brief Studio sur la page OpenAI", systemImage: "safari")
                     .font(.callout.weight(.semibold))
-                Text("Si aucun onglet ne s’ouvre, copie le lien et colle-le dans la barre d’adresse de Chrome. Il expire après trois minutes.")
+                Text("Si aucun onglet ne s’ouvre, copie le lien dans la barre d’adresse de ton navigateur. Il expire après trois minutes.")
                     .font(.callout).foregroundStyle(.secondary)
                 HStack {
-                    Link("Ouvrir dans le navigateur", destination: url).buttonStyle(.borderedProminent)
+                    Button(ChatGPTBrowser.actionLabel, action: studio.reopenSignInPage)
+                        .buttonStyle(.borderedProminent)
                     Button(copied ? "Lien copié" : "Copier le lien") {
                         let pasteboard = NSPasteboard.general
                         pasteboard.clearContents()

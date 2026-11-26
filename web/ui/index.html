@@ -14,6 +14,7 @@
       <p class="brand"><span class="brand-symbol" aria-hidden="true">↗</span> Brief Studio</p>
       <div class="bar-actions">
         <button class="button bar-account" id="sources-button" type="button" disabled>Sources</button>
+        <button class="button bar-account" id="schedule-button" type="button" disabled>Planification</button>
         <button class="button bar-account" id="account-button" type="button" disabled>Compte ChatGPT</button>
         <button class="button new-button" id="new-button" type="button" disabled><span aria-hidden="true">+</span> Nouveau brief</button>
       </div>
@@ -73,6 +74,15 @@
           <select id="model-picker" name="model" required></select>
         </div>
         <div class="field">
+          <label for="gex-mode">Positionnement dealer</label>
+          <select id="gex-mode" name="gexMode" aria-describedby="gex-coverage">
+            <option value="without">Sans GEX</option>
+            <option value="with">Avec GEX importé</option>
+            <option value="public">Avec GEX public</option>
+          </select>
+          <small class="fine-print" id="gex-coverage" aria-live="polite">Les niveaux futures importés sont disponibles quel que soit le mode GEX.</small>
+        </div>
+        <div class="field">
           <label for="note">Contexte macro <span>· facultatif</span></label>
           <textarea id="note" name="note" rows="4" maxlength="4000" placeholder="Ex. une publication à surveiller"></textarea>
         </div>
@@ -128,7 +138,18 @@
             <h3 id="x-title">X</h3>
             <span class="source-state" id="x-state"></span>
           </div>
-          <p class="fine-print">Le brief et l’export conservent les liens des publications. X peut facturer les lectures du test et de la génération.</p>
+          <div class="source-snapshot">
+            <input id="x-snapshot-file" type="file" accept=".json,application/json" hidden>
+            <div class="source-actions">
+              <button class="button button-secondary" id="x-bird-refresh" type="button" hidden>Actualiser Walter avec Bird</button>
+              <button class="button button-secondary" id="x-snapshot-pick" type="button">Importer un fichier X</button>
+              <button class="source-disconnect" id="x-snapshot-remove" type="button" hidden>Retirer le fichier X</button>
+            </div>
+            <p class="fine-print source-action-hint" id="x-bird-unavailable" hidden>Connecteur Bird local indisponible. Tu peux importer un fichier JSON.</p>
+            <p class="fine-print source-action-hint" id="x-snapshot-summary" hidden></p>
+            <p id="x-snapshot-status" class="notice" role="status" aria-live="polite" hidden></p>
+          </div>
+          <p class="fine-print">Le brief et l’export conservent les liens des publications. En mode API, X peut facturer le test et la génération.</p>
           <div class="field">
             <label for="x-target">Comptes X <span>séparés par des virgules</span></label>
             <input id="x-target" type="text" maxlength="256" placeholder="@deitaone, @autre" autocomplete="off" spellcheck="false" autocapitalize="none" required>
@@ -147,6 +168,28 @@
           <p id="x-action-hint" class="fine-print source-action-hint" hidden></p>
           <p id="x-status" class="notice" role="status" aria-live="polite" hidden></p>
         </form>
+        <section class="source-form market-source" id="source-market" aria-labelledby="market-title">
+          <div class="source-heading">
+            <h3 id="market-title">Niveaux et GEX</h3>
+            <span class="source-state" id="market-state" role="status">Vérification…</span>
+          </div>
+          <div class="source-snapshot market-snapshot">
+            <p class="market-summary" id="market-summary" hidden></p>
+            <input id="market-file" type="file" accept=".json,application/json" hidden>
+            <div class="source-actions">
+              <button class="button button-secondary" id="market-import" type="button">Importer un fichier</button>
+              <a class="button button-secondary" href="/api/sources/market/template" download="donnees-nq-es.json">Télécharger le modèle JSON</a>
+              <button class="source-disconnect" id="market-remove" type="button" hidden>Retirer le fichier</button>
+            </div>
+          </div>
+          <p class="fine-print">Utilise une observation NQ=F ou ES=F et saisis les niveaux en points futures. Les données retenues sont transmises à OpenAI et figurent dans le brief exporté.</p>
+          <p id="market-status" class="notice" role="status" aria-live="polite" hidden></p>
+          <div class="market-public">
+            <p class="fine-print"><strong>FlashAlpha</strong> · relevé différé de la séance précédente sur NQ et ES, consultable dans Brief Studio.</p>
+            <button class="button button-secondary" id="market-test-public" type="button">Tester le GEX public</button>
+            <p id="market-public-status" class="notice" role="status" aria-live="polite" hidden></p>
+          </div>
+        </section>
       </div>
       <p class="fine-print">Les jetons que tu choisis de conserver sont enregistrés en clair dans le profil local.</p>
       <div class="form-actions">
@@ -155,10 +198,68 @@
     </div>
   </dialog>
 
+  <dialog id="schedule" aria-labelledby="schedule-title">
+    <div class="dialog-content">
+      <h2 id="schedule-title">Planification</h2>
+      <p class="fine-print">Le lanceur reste ouvert et l’ordinateur éveillé. Tu peux fermer le navigateur. Les briefs générés sont enregistrés dans ta bibliothèque.</p>
+      <p id="schedule-status" class="notice" role="status" aria-live="polite" hidden></p>
+      <div class="schedule-summary" id="schedule-summary" hidden>
+        <p id="schedule-state"></p>
+        <p id="schedule-next" hidden></p>
+        <p id="schedule-last" hidden></p>
+        <button class="footer-button" id="schedule-last-brief" type="button" hidden>Ouvrir le dernier brief</button>
+      </div>
+      <form id="schedule-form" hidden>
+        <fieldset id="schedule-fields" disabled>
+          <div class="schedule-grid">
+            <div class="field">
+              <label for="schedule-time">Heure</label>
+              <input id="schedule-time" type="time" value="13:30" required>
+            </div>
+            <div class="field">
+              <label for="schedule-zone">Fuseau horaire</label>
+              <input id="schedule-zone" type="text" list="schedule-zones" placeholder="Europe/Paris" maxlength="128" autocapitalize="none" spellcheck="false" required>
+              <datalist id="schedule-zones"></datalist>
+            </div>
+          </div>
+          <div class="field">
+            <label for="schedule-days">Fréquence</label>
+            <select id="schedule-days">
+              <option value="weekdays">Du lundi au vendredi</option>
+              <option value="daily">Tous les jours</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="schedule-model">Modèle ChatGPT</label>
+            <select id="schedule-model" required></select>
+          </div>
+          <div class="field">
+            <label for="schedule-gex">Positionnement dealer</label>
+            <select id="schedule-gex">
+              <option value="without">Sans GEX</option>
+              <option value="with">Avec GEX importé</option>
+              <option value="public">Avec GEX public</option>
+            </select>
+          </div>
+          <label class="schedule-consent">
+            <input id="schedule-consent" type="checkbox" required autocomplete="off">
+            <span>J’autorise la génération récurrente avec mon forfait ChatGPT et les sources actives. Si elle est configurée, l’API X peut débiter des crédits.</span>
+          </label>
+        </fieldset>
+      </form>
+      <div class="form-actions">
+        <button class="button button-secondary" id="schedule-close" type="button">Fermer</button>
+        <button class="button button-secondary" id="schedule-pause" type="button" hidden>Mettre en pause</button>
+        <button class="button button-primary" id="schedule-save" form="schedule-form" type="submit" hidden disabled>Enregistrer et activer</button>
+      </div>
+    </div>
+  </dialog>
+
   <dialog id="account" aria-labelledby="account-title">
     <div class="dialog-content">
       <h2 id="account-title">Compte ChatGPT</h2>
       <p id="account-identity"></p>
+      <p class="fine-print" id="account-persistence" hidden></p>
       <p class="notice" id="account-status" role="status" aria-live="polite" hidden></p>
       <form method="post" action="/auth/start" id="account-signin" hidden>
         <button class="button button-primary" type="submit">Continuer avec ChatGPT <span aria-hidden="true">↗</span></button>

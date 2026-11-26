@@ -98,10 +98,26 @@ final class StudioModel: ObservableObject {
         case let .waitingForBrowser(url):
             browserSignInURL = url
             working = "En attente du navigateur…"
+        case .browserOpenFailed:
+            if browserSignInURL != nil { showBrowserOpenError() }
         case .verifying:
             browserSignInURL = nil
+            operationError = nil
             working = "Vérification de l’autorisation…"
         }
+    }
+
+    func reopenSignInPage() {
+        guard let url = browserSignInURL else { return }
+        operationError = nil
+        Task {
+            do { try await ChatGPTBrowser.open(url) }
+            catch { if browserSignInURL == url { showBrowserOpenError() } }
+        }
+    }
+
+    private func showBrowserOpenError() {
+        operationError = "Impossible d’ouvrir le navigateur. Réessaie ou utilise Copier le lien."
     }
 
     private func didConnect(_ selected: ChatGPTProfile) async throws {

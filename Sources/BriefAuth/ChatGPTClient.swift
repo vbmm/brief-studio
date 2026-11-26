@@ -17,6 +17,7 @@ public struct ChatGPTModel: Sendable, Identifiable {
 public enum ChatGPTSignInStage: Sendable {
     case starting
     case waitingForBrowser(URL)
+    case browserOpenFailed
     case verifying
 }
 
@@ -95,17 +96,17 @@ public actor ChatGPTClient {
     }
 
     /// Signs in with the current or most recent registration if there is one.
-    public func signIn(progress: ChatGPTSignInProgress = { _ in }) async throws -> ChatGPTProfile {
+    public func signIn(progress: @escaping ChatGPTSignInProgress = { _ in }) async throws -> ChatGPTProfile {
         try await authorize(selection: .current, progress: progress)
     }
 
     /// Prompts for a separate account or workspace registration.
-    public func addAccount(progress: ChatGPTSignInProgress = { _ in }) async throws -> ChatGPTProfile {
+    public func addAccount(progress: @escaping ChatGPTSignInProgress = { _ in }) async throws -> ChatGPTProfile {
         try await authorize(selection: .new, progress: progress)
     }
 
     /// Selects an existing registration and reauthorizes it if needed.
-    public func useProfile(id: String, progress: ChatGPTSignInProgress = { _ in }) async throws -> ChatGPTProfile {
+    public func useProfile(id: String, progress: @escaping ChatGPTSignInProgress = { _ in }) async throws -> ChatGPTProfile {
         try begin()
         let saved: Account
         do {
@@ -132,7 +133,7 @@ public actor ChatGPTClient {
         case current, new, saved(String)
     }
 
-    private func authorize(selection: SignInSelection, progress: ChatGPTSignInProgress) async throws -> ChatGPTProfile {
+    private func authorize(selection: SignInSelection, progress: @escaping ChatGPTSignInProgress) async throws -> ChatGPTProfile {
         try begin()
         defer { busy = false }
 
@@ -157,11 +158,12 @@ public actor ChatGPTClient {
         try Task.checkCancellation()
         let launch = Task { @MainActor in
             guard !Task.isCancelled else { return }
-            let configuration = NSWorkspace.OpenConfiguration()
-            configuration.activates = true
-            // The local listener remains open on failure so the user can use
-            // the URL from the waiting stage in another browser.
-            _ = try? await NSWorkspace.shared.open(browserURL, configuration: configuration)
+            do {
+                try await ChatGPTBrowser.open(browserURL)
+            } catch {
+                // Keep the listener available for the explicit retry or copy action.
+                if !Task.isCancelled { await progress(.browserOpenFailed) }
+            }
         }
         defer { launch.cancel() }
         let callback = try await listener.callback()

@@ -71,12 +71,12 @@ func verifyIdentity(raw, clientID, nonce string, keys signingKeys, now time.Time
 	}
 	var claims idClaims
 	if json.Unmarshal(claimsJSON, &claims) != nil || claims.Issuer != issuer ||
-		claims.Subject == "" || claims.Expires <= now.Unix() || claims.NotBefore > now.Unix()+60 ||
+		!validSubject(claims.Subject) || claims.Expires <= now.Unix() || claims.NotBefore > now.Unix()+60 ||
 		subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(nonce)) != 1 ||
 		!validAudience(claims.Audience, claims.Authorized, clientID) {
 		return Profile{}, ErrIdentity
 	}
-	profile := Profile{Name: boundedLabel(claims.Name, 200)}
+	profile := Profile{Name: boundedLabel(claims.Name, 200), subject: claims.Subject}
 	if claims.EmailVerified {
 		profile.Email = boundedLabel(claims.Email, 320)
 	}

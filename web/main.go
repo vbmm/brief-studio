@@ -20,10 +20,12 @@ import (
 	"time"
 
 	"briefstudio/web/internal/chatgpt"
+	"briefstudio/web/internal/schedule"
+	"briefstudio/web/internal/sessionvault"
 	"briefstudio/web/internal/sources"
 )
 
-var version = "0.3.0"
+var version = "0.3.7"
 
 //go:embed ui/*
 var webAssets embed.FS
@@ -49,6 +51,13 @@ func run() error {
 		}
 		*dataDir = filepath.Join(base, "Brief Studio Web")
 	}
+	store, lock, vaultErr := sessionvault.Open(*dataDir)
+	if errors.Is(vaultErr, sessionvault.ErrInUse) {
+		return vaultErr
+	}
+	if lock != nil {
+		defer lock.Close()
+	}
 	archive, err := openLibrary(*dataDir)
 	if err != nil {
 		return fmt.Errorf("ouvrir la bibliothèque locale : %w", err)
@@ -67,6 +76,20 @@ func run() error {
 		bootKey: randomKey(), browserKey: randomKey(), cookieName: fmt.Sprintf("brief_studio_%d", listener.Addr().(*net.TCPAddr).Port),
 		library: archive, client: chatgpt.New(), assets: assets,
 		sourceSettings: openSourceStore(*dataDir), fetchSource: sources.New().Fetch,
+		sessionStore: store, fetchPublicGEX: sources.FetchPublicGEX,
+	}
+	app.session, err = app.client.RestoreSession(archive.hostID, store)
+	if vaultErr != nil || err != nil {
+		app.storageWarning = sessionvault.ErrUnavailable.Error()
+	}
+	if bird := sources.FindBird(); bird != nil {
+		app.refreshBird = bird.Refresh
+	}
+	if lock != nil {
+		app.schedule, err = schedule.Open(filepath.Join(*dataDir, "schedule.json"), time.Now())
+		if err != nil {
+			log.Print("Le fichier de planification locale n’a pas pu être ouvert.")
+		}
 	}
 	server := &http.Server{
 		Handler: app.handler(), ReadHeaderTimeout: 5 * time.Second,
@@ -75,6 +98,17 @@ func run() error {
 	}
 	shutdown, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	if app.schedule != nil {
+		scheduleDone := make(chan struct{})
+		go func() {
+			defer close(scheduleDone)
+			app.schedule.Run(shutdown, app.runScheduledBrief)
+		}()
+		defer func() {
+			stop()
+			<-scheduleDone
+		}()
+	}
 	go func() {
 		<-shutdown.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

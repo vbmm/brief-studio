@@ -166,7 +166,7 @@ func TestCompleteExchangesCodeAndVerifiesSignedIdentity(t *testing.T) {
 	attempt, login = makeAttempt(t, c)
 	query := url.Values{"state": {login.Get("state")}, "code": {"code_fixture"}, "client_id": {idFixture}}
 	account, err := c.Complete(context.Background(), attempt, query)
-	if err != nil || account.Profile() != (Profile{Name: "Test", Email: "test@example.com", CanUsePlan: true}) {
+	if err != nil || account.Profile() != (Profile{Name: "Test", Email: "test@example.com", CanUsePlan: true, subject: "fixture-user"}) {
 		t.Fatalf("validated account: %v", err)
 	}
 	visible, err := json.Marshal(account)
@@ -352,6 +352,80 @@ func TestStreamRequiresCompletedNonPartialText(t *testing.T) {
 		got, err := readStream(strings.NewReader(c.body))
 		if got != c.want || !errors.Is(err, c.err) {
 			t.Fatalf("stream got %q, %v; wanted %q, %v", got, err, c.want, c.err)
+		}
+	}
+}
+
+func TestRespondHandlesUnexpectedResponseContentType(t *testing.T) {
+	const completed = `{"object":"response","status":"completed","error":null,"incomplete_details":null,"output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Séance"}]}]}`
+	const stream = deltaFixture + "\n\n" + finalFixture + "\n\n"
+	for _, tc := range []struct {
+		name, media, body, want, detail string
+		wantErr                         error
+	}{
+		{name: "completed JSON", media: "application/json; charset=utf-8", body: completed, want: "Séance"},
+		{name: "SSE without MIME", body: stream, want: "Séance"},
+		{name: "SSE labeled plain text", media: "text/plain", body: "event: response.output_text.delta\n" + stream, want: "Séance"},
+		{name: "unknown JSON", media: "application/json", body: `{"status":"completed","output":"internal payload"}`, wantErr: ErrIncomplete, detail: "objet Responses"},
+		{name: "incomplete JSON", media: "application/json", body: strings.Replace(completed, `"status":"completed"`, `"status":"incomplete"`, 1), wantErr: ErrIncomplete, detail: "fin"},
+		{name: "failed JSON", media: "application/json", body: strings.Replace(completed, `"error":null`, `"error":{"code":"internal payload"}`, 1), wantErr: ErrIncomplete, detail: "fin"},
+		{name: "unconfirmed message", media: "application/json", body: strings.Replace(completed, `"role":"assistant","status":"completed"`, `"role":"assistant"`, 1), wantErr: ErrIncomplete, detail: "incomplet"},
+		{name: "partial mislabeled stream", media: "text/plain", body: deltaFixture + "\n\n", wantErr: ErrIncomplete, detail: "confirmation de fin"},
+		{name: "trailing markup", media: "application/json", body: completed + "<p>internal payload</p>", wantErr: ErrIncomplete, detail: "JSON"},
+		{name: "HTML gateway", media: "text/html", body: "<p>internal payload</p>", wantErr: ErrIncomplete, detail: "HTML"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now()
+			account := makeSession(now, scopes)
+			account.models = map[string]bool{"fixture-model": true}
+			c := fakeClient(func() time.Time { return now }, func(r *http.Request) (*http.Response, error) {
+				if r.URL.String() != responsesURL {
+					t.Fatalf("unexpected inference endpoint")
+				}
+				return fixtureResponse(200, tc.media, tc.body), nil
+			})
+			got, err := c.Respond(context.Background(), account, "fixture-model", "Brief demo")
+			if got != tc.want || !errors.Is(err, tc.wantErr) ||
+				(tc.detail != "" && (!strings.Contains(err.Error(), tc.detail) || strings.Contains(err.Error(), "internal payload"))) {
+				t.Fatalf("got %q, %v; wanted %q, %v containing %q", got, err, tc.want, tc.wantErr, tc.detail)
+			}
+		})
+	}
+}
+
+func TestStreamUsesConfirmedAssistantText(t *testing.T) {
+	const unrelated = `data: {"type":"response.shell_call_output_content.delta","delta":{"stdout":"internal payload"}}`
+	const finalText = `data: {"type":"response.output_text.done","text":"Texte final"}`
+	const terminalOutput = `data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"reasoning","content":[{"type":"reasoning_text","text":"internal payload"}]},{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Texte confirmé"}]}]}}`
+	for _, tc := range []struct {
+		frames []string
+		want   string
+	}{
+		{[]string{unrelated, terminalOutput}, "Texte confirmé"},
+		{[]string{deltaFixture, finalText, finalFixture}, "Texte final"},
+		{[]string{deltaFixture, finalText, terminalOutput}, "Texte confirmé"},
+	} {
+		got, err := readStream(strings.NewReader(strings.Join(tc.frames, "\n\n") + "\n\n"))
+		if err != nil || got != tc.want {
+			t.Fatalf("stream got %q, %v; wanted %q", got, err, tc.want)
+		}
+	}
+}
+
+func TestStreamDoesNotReturnRefusalsOrPartialOutput(t *testing.T) {
+	for _, tc := range []struct{ event, reason string }{
+		{`{"type":"response.completed","response":{"status":"completed","output":null}}`, "illisible"},
+		{`{"type":"response.completed","response":{"status":"completed","output":[]}}`, "aucun texte"},
+		{`{"type":"response.completed","response":{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"refusal","refusal":"internal payload"}]}]}}`, "refusé"},
+		{`{"type":"response.completed","response":{"status":"incomplete"}}`, "confirmé"},
+		{`{"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}`, "limite de sortie"},
+		{`{"type":"response.failed","response":{"error":{"code":"internal payload","message":"internal payload"}}}`, "échec de la génération"},
+		{`{"type":"response.output_text.delta","delta":{"text":"internal payload"}}`, "illisible"},
+	} {
+		body := deltaFixture + "\n\ndata: " + tc.event + "\n\n"
+		got, err := readStream(strings.NewReader(body))
+		if got != "" || !errors.Is(err, ErrIncomplete) || !strings.Contains(err.Error(), tc.reason) || strings.Contains(err.Error(), "internal payload") {
+			t.Fatalf("stream result %q, %v; wanted safe failure containing %q", got, err, tc.reason)
 		}
 	}
 }

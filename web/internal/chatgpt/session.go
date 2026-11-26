@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"briefstudio/web/internal/sessionvault"
 )
 
 type tokens struct {
@@ -98,10 +100,12 @@ func (c *Client) accessToken(ctx context.Context, s *Session) (string, error) {
 	}, &reply)
 	if err != nil {
 		var response *providerError
-		if errors.As(err, &response) && expiredRefresh(response.code) {
+		if errors.As(err, &response) && (expiredRefresh(response.code) || response.status == http.StatusUnauthorized) {
 			s.tokens = tokens{}
+			s.idToken = ""
 			s.models = nil
-			s.profile = Profile{}
+			s.profile.CanUsePlan = false
+			s.persistLocked()
 			return "", ErrSessionExpired
 		}
 		return "", publicError(err)
@@ -112,11 +116,29 @@ func (c *Client) accessToken(ctx context.Context, s *Session) (string, error) {
 	}
 	s.tokens = renewed
 	s.profile.CanUsePlan = renewed.canUsePlan()
+	s.persistLocked()
 	if !s.profile.CanUsePlan {
 		s.models = nil
 		return "", ErrPlanNotGranted
 	}
 	return renewed.access, nil
+}
+
+// A resource can reject an access token before its advertised expiry. Keep
+// the refresh grant and renew on the next operation instead of replaying the
+// rejected request or asking the user to sign in immediately.
+func (c *Client) resourceError(s *Session, access string, err error) error {
+	public := publicError(err)
+	if !errors.Is(public, ErrSessionExpired) {
+		return public
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lifetime.Err() == nil && s.tokens.access == access {
+		s.tokens.expiry = c.now()
+		s.persistLocked()
+	}
+	return ErrAccessExpired
 }
 
 func expiredRefresh(code string) bool {
@@ -135,12 +157,17 @@ func (c *Client) SignOut(ctx context.Context, s *Session) error {
 	s.mu.Lock()
 	// Let an exchange in progress finish rotating before choosing which
 	// refresh token to revoke. No subsequent request can use this session.
+	if s.store != nil && s.store.Delete() != nil {
+		s.mu.Unlock()
+		return sessionvault.ErrUnavailable
+	}
 	s.cancel()
 	refresh, id := s.tokens.refresh, s.clientID
 	s.tokens = tokens{}
 	s.profile = Profile{}
 	s.models = nil
 	s.clientID = ""
+	s.idToken, s.hostID, s.remembered = "", "", false
 	s.mu.Unlock()
 	if refresh == "" {
 		return nil

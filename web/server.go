@@ -13,6 +13,8 @@ import (
 
 	"briefstudio/web/internal/chatgpt"
 	"briefstudio/web/internal/engine"
+	"briefstudio/web/internal/schedule"
+	"briefstudio/web/internal/sessionvault"
 	"briefstudio/web/internal/sources"
 )
 
@@ -21,13 +23,17 @@ type studioServer struct {
 	assets                                        fs.FS
 	library                                       *library
 	client                                        *chatgpt.Client
+	sessionStore                                  sessionvault.Store
+	schedule                                      *schedule.Store
+	storageWarning                                string
 	sourceSettings                                *sourceStore
 	fetchSource                                   func(context.Context, sources.Provider, sources.Settings, time.Time) ([]sources.Headline, error)
+	fetchPublicGEX                                func(context.Context, time.Time) (*sources.MarketSnapshot, error)
+	refreshBird                                   func(context.Context) (sources.XSnapshot, error)
 
 	mu        sync.Mutex
 	pending   *chatgpt.Attempt
 	session   *chatgpt.Session
-	profile   chatgpt.Profile
 	models    []chatgpt.Model
 	authError string
 	busy      bool
@@ -45,8 +51,16 @@ func (s *studioServer) handler() http.Handler {
 	mux.HandleFunc("GET /api/models", s.withSession(true, s.listModels))
 	mux.HandleFunc("POST /api/signout", s.withSession(true, s.signOut))
 	mux.HandleFunc("POST /api/generate", s.withSession(true, s.generate))
+	mux.HandleFunc("GET /api/schedule", s.withSession(true, s.scheduleState))
+	mux.HandleFunc("POST /api/schedule", s.withSession(true, s.changeSchedule))
 	mux.HandleFunc("GET /api/update", s.withSession(true, checkUpdate))
 	mux.HandleFunc("GET /api/sources", s.withSession(true, s.sourceStatus))
+	mux.HandleFunc("GET /api/sources/market", s.withSession(true, s.marketSourceStatus))
+	mux.HandleFunc("POST /api/sources/market", s.withSession(true, s.changeMarketSource))
+	mux.HandleFunc("GET /api/sources/market/template", s.withSession(false, marketSourceTemplate))
+	mux.HandleFunc("POST /api/sources/market/public/test", s.withSession(true, s.testPublicGEX))
+	mux.HandleFunc("POST /api/sources/x/snapshot", s.withSession(true, s.changeXSnapshot))
+	mux.HandleFunc("POST /api/sources/x/bird", s.withSession(true, s.birdSnapshot))
 	mux.HandleFunc("POST /api/sources/{provider}", s.withSession(true, s.changeSource))
 	mux.HandleFunc("POST /api/sources/{provider}/test", s.withSession(true, s.testSource))
 	mux.HandleFunc("GET /api/sample", s.withSession(true, func(w http.ResponseWriter, _ *http.Request) {
@@ -124,7 +138,12 @@ func (s *studioServer) startAuth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "Une opération est déjà en cours.")
 		return
 	}
-	attempt, authorize, err := s.client.Start(s.library.hostID, s.origin+"/auth/callback")
+	if _, connected, _ := s.session.Status(); connected {
+		s.mu.Unlock()
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	attempt, authorize, err := s.client.StartReturning(s.library.hostID, s.origin+"/auth/callback", s.session)
 	if err == nil {
 		s.pending = &attempt
 		s.authError = ""
@@ -153,10 +172,13 @@ func (s *studioServer) finishAuth(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 55*time.Second)
 	defer cancel()
 	session, err := s.client.Complete(ctx, attempt, r.URL.Query())
+	if err == nil {
+		session.Remember(s.sessionStore)
+	}
 	s.mu.Lock()
 	s.busy = false
 	if err == nil {
-		s.session, s.profile = session, session.Profile()
+		s.session = session
 		s.models = nil
 		s.authError = ""
 	} else {
@@ -172,13 +194,18 @@ func (s *studioServer) finishAuth(w http.ResponseWriter, r *http.Request) {
 
 func (s *studioServer) state(w http.ResponseWriter, _ *http.Request) {
 	s.mu.Lock()
-	response := struct {
-		Connected bool            `json:"connected"`
-		Profile   chatgpt.Profile `json:"profile"`
-		AuthError string          `json:"authError,omitempty"`
-		Version   string          `json:"version"`
-	}{s.session != nil, s.profile, s.authError, version}
+	session, authError := s.session, s.authError
 	s.mu.Unlock()
+	profile, connected, remembered := session.Status()
+	response := struct {
+		Connected      bool            `json:"connected"`
+		HasAccount     bool            `json:"hasAccount"`
+		Remembered     bool            `json:"remembered"`
+		Profile        chatgpt.Profile `json:"profile"`
+		AuthError      string          `json:"authError,omitempty"`
+		StorageWarning string          `json:"storageWarning,omitempty"`
+		Version        string          `json:"version"`
+	}{connected, session != nil, remembered, profile, authError, s.storageWarning, version}
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -193,9 +220,16 @@ func (s *studioServer) takeOperation(w http.ResponseWriter, requirePlan bool) (*
 		writeError(w, http.StatusUnauthorized, "Connecte-toi à ChatGPT pour continuer.")
 		return nil, false
 	}
-	if requirePlan && !s.profile.CanUsePlan {
-		writeError(w, http.StatusForbidden, "L’utilisation du forfait ChatGPT n’est pas autorisée pour cette session.")
-		return nil, false
+	if requirePlan {
+		profile, connected, _ := s.session.Status()
+		if !connected {
+			writeError(w, http.StatusUnauthorized, chatgpt.ErrSessionExpired.Error())
+			return nil, false
+		}
+		if !profile.CanUsePlan {
+			writeError(w, http.StatusForbidden, "L’utilisation du forfait ChatGPT n’est pas autorisée pour cette session.")
+			return nil, false
+		}
 	}
 	s.busy = true
 	return s.session, true
@@ -217,7 +251,7 @@ func (s *studioServer) listModels(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	models, err := s.client.Models(ctx, session)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		writeModelError(w, err)
 		return
 	}
 	if models == nil {
@@ -235,13 +269,21 @@ func (s *studioServer) signOut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.releaseOperation()
-	s.mu.Lock()
-	s.session, s.pending, s.models = nil, nil, nil
-	s.profile, s.authError = chatgpt.Profile{}, ""
-	s.mu.Unlock()
 	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 	defer cancel()
-	if err := s.client.SignOut(ctx, session); err != nil {
+	err := s.client.SignOut(ctx, session)
+	if err == nil || errors.Is(err, chatgpt.ErrRevocation) {
+		if s.schedule != nil {
+			// The account binding independently prevents execution if the
+			// schedule file cannot be updated during sign-out.
+			_ = s.schedule.Update(schedule.Config{}, time.Now())
+		}
+		s.mu.Lock()
+		s.session, s.pending, s.models = nil, nil, nil
+		s.authError = ""
+		s.mu.Unlock()
+	}
+	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -250,14 +292,23 @@ func (s *studioServer) signOut(w http.ResponseWriter, r *http.Request) {
 	}{true})
 }
 
+type briefRequest struct {
+	Model     string         `json:"model"`
+	Note      string         `json:"note"`
+	SourceURL string         `json:"sourceURL"`
+	GEXMode   engine.GEXMode `json:"gexMode"`
+}
+
+var errArchiveSave = errors.New("Le brief n’a pas pu être enregistré sur cet ordinateur.")
+
 func (s *studioServer) generate(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Model     string `json:"model"`
-		Note      string `json:"note"`
-		SourceURL string `json:"sourceURL"`
-	}
+	var req briefRequest
 	if readJSON(w, r, &req) != nil {
 		writeError(w, http.StatusBadRequest, "Demande de brief invalide.")
+		return
+	}
+	if !req.GEXMode.Valid() {
+		writeError(w, http.StatusBadRequest, "Choisis un mode GEX valide.")
 		return
 	}
 	session, ok := s.takeOperation(w, true)
@@ -266,13 +317,7 @@ func (s *studioServer) generate(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.releaseOperation()
 	s.mu.Lock()
-	allowed := false
-	for _, model := range s.models {
-		if model.ID == req.Model {
-			allowed = true
-			break
-		}
-	}
+	allowed := modelAvailable(s.models, req.Model)
 	s.mu.Unlock()
 	if !allowed {
 		writeError(w, http.StatusBadRequest, "Choisis un modèle disponible pour ton compte.")
@@ -280,22 +325,76 @@ func (s *studioServer) generate(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 145*time.Second)
 	defer cancel()
-	doc, err := engine.GenerateWithNews(ctx, req.Note, req.SourceURL, func(ctx context.Context, input string) (string, error) {
-		return s.client.Respond(ctx, session, req.Model, input)
-	}, s.gatherOptionalNews)
+	id, doc, err := s.buildAndSaveBrief(ctx, session, req)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	id, err := s.library.save(doc)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Le brief n’a pas pu être enregistré sur cet ordinateur.")
+		switch {
+		case errors.Is(err, sources.ErrPublicGEXUnavailable):
+			writePublicGEXError(w, err)
+		case errors.Is(err, engine.ErrGEXUnavailable):
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+		case errors.Is(err, errArchiveSave):
+			writeError(w, http.StatusInternalServerError, err.Error())
+		default:
+			writeModelError(w, err)
+		}
 		return
 	}
 	writeJSON(w, http.StatusCreated, struct {
 		ID       string          `json:"id"`
 		Document engine.Document `json:"document"`
 	}{id, doc})
+}
+
+func modelAvailable(models []chatgpt.Model, selected string) bool {
+	for _, model := range models {
+		if model.ID == selected {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *studioServer) buildAndSaveBrief(ctx context.Context, session *chatgpt.Session, req briefRequest) (string, engine.Document, error) {
+	cutoff := time.Now()
+	market, marketErr := s.sourceSettings.readMarketSnapshot(cutoff)
+	if marketErr != nil && req.GEXMode == engine.WithGEX {
+		return "", engine.Document{}, errors.Join(engine.ErrGEXUnavailable, marketErr)
+	}
+	input := engine.GenerationSources{
+		News: s.gatherOptionalNews, Market: market, MarketReadFailed: marketErr != nil, GEXMode: req.GEXMode,
+	}
+	if req.GEXMode == engine.PublicGEX {
+		var err error
+		input.PublicGEX, err = s.readPublicGEX(ctx, cutoff)
+		if err != nil {
+			return "", engine.Document{}, err
+		}
+	}
+	doc, err := engine.GenerateWithSources(ctx, req.Note, req.SourceURL, func(ctx context.Context, input string) (string, error) {
+		return s.client.Respond(ctx, session, req.Model, input)
+	}, input)
+	if err != nil {
+		return "", engine.Document{}, err
+	}
+	// Linearize the final write with a pause that cancels a scheduled run.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return "", engine.Document{}, err
+	}
+	id, err := s.library.save(doc)
+	if err != nil {
+		return "", engine.Document{}, errArchiveSave
+	}
+	return id, doc, nil
+}
+
+func writeModelError(w http.ResponseWriter, err error) {
+	status := http.StatusBadGateway
+	if errors.Is(err, chatgpt.ErrSessionExpired) || errors.Is(err, chatgpt.ErrSignedOut) {
+		status = http.StatusUnauthorized
+	}
+	writeError(w, status, err.Error())
 }
 
 func (s *studioServer) asset(name, mime string) http.HandlerFunc {

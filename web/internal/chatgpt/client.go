@@ -1,5 +1,5 @@
 // Package chatgpt implements the Sign in with ChatGPT flow for a local app.
-// OAuth attempts and account sessions belong in server memory, not the browser.
+// OAuth attempts stay in server memory; a session may use local OS storage.
 package chatgpt
 
 import (
@@ -17,6 +17,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"briefstudio/web/internal/sessionvault"
 )
 
 const (
@@ -31,7 +33,7 @@ const (
 	responsesURL    = resource + "/responses"
 	scopes          = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
 	planScope       = "chatgpt.tokens.use.direct"
-	attemptLifetime = 3 * time.Minute
+	attemptLifetime = 10 * time.Minute
 	requestTimeout  = 25 * time.Second
 	streamTimeout   = 3 * time.Minute
 )
@@ -45,6 +47,7 @@ var (
 	ErrPlanNotGranted  = errors.New("Ce compte n’a pas autorisé l’utilisation de son forfait ChatGPT.")
 	ErrPlanLimit       = errors.New("La limite d’utilisation de Brief Studio ou de ton forfait ChatGPT est atteinte.")
 	ErrSessionExpired  = errors.New("La session ChatGPT a expiré. Reconnecte-toi.")
+	ErrAccessExpired   = errors.New("L’accès à ChatGPT a expiré. Réessaie pour renouveler la session.")
 	ErrModel           = errors.New("Ce modèle ChatGPT est indisponible pour ce compte.")
 	ErrIncomplete      = errors.New("La réponse de ChatGPT est incomplète.")
 	ErrRevocation      = errors.New("Session effacée dans Brief Studio. OpenAI n’a pas confirmé la révocation.")
@@ -91,6 +94,7 @@ type Attempt struct {
 
 type authorization struct {
 	state, nonce, verifier, redirect string
+	hostID, clientID, subject        string
 	expires                          time.Time
 	used                             atomic.Bool
 }
@@ -98,10 +102,23 @@ type authorization struct {
 // Start makes an authorization attempt and its URL. The app must already be
 // listening on the exact callback URL. Store the attempt until the callback.
 func (c *Client) Start(hostID, callbackURL string) (Attempt, string, error) {
+	return c.StartReturning(hostID, callbackURL, nil)
+}
+
+// StartReturning reuses the verified registration belonging to this host.
+func (c *Client) StartReturning(hostID, callbackURL string, session *Session) (Attempt, string, error) {
 	if !uuidHost.MatchString(hostID) || !validCallback(callbackURL) {
 		return Attempt{}, "", errors.New("Les paramètres de connexion locale sont invalides.")
 	}
-	pending := &authorization{redirect: callbackURL, expires: c.now().Add(attemptLifetime)}
+	pending := &authorization{redirect: callbackURL, hostID: hostID, expires: c.now().Add(attemptLifetime)}
+	var hint string
+	if session != nil {
+		session.mu.Lock()
+		if session.hostID == hostID && clientID.MatchString(session.clientID) && validSubject(session.profile.subject) {
+			pending.clientID, pending.subject, hint = session.clientID, session.profile.subject, session.idToken
+		}
+		session.mu.Unlock()
+	}
 	for _, secret := range []*string{&pending.state, &pending.nonce, &pending.verifier} {
 		var bytes [32]byte
 		if _, err := rand.Read(bytes[:]); err != nil {
@@ -122,6 +139,13 @@ func (c *Client) Start(hostID, callbackURL string) (Attempt, string, error) {
 		"nonce":                 {pending.nonce},
 		"code_challenge_method": {"S256"},
 		"code_challenge":        {base64.RawURLEncoding.EncodeToString(challenge[:])},
+	}
+	if pending.clientID != "" {
+		query.Set("client_id", pending.clientID)
+		query.Del("agent_name_hint")
+		if hint != "" {
+			query.Set("id_token_hint", hint)
+		}
 	}
 	return Attempt{pending}, authorizeURL + "?" + query.Encode(), nil
 }
@@ -169,6 +193,12 @@ func (c *Client) Complete(ctx context.Context, attempt Attempt, query url.Values
 	}
 	code, validCode := one(query, "code")
 	id, validID := one(query, "client_id")
+	if pending.clientID != "" {
+		if _, supplied := query["client_id"]; !supplied {
+			id, validID = pending.clientID, true
+		}
+		validID = validID && id == pending.clientID
+	}
 	if !validCode || len(code) > 4096 || !validID || !clientID.MatchString(id) {
 		return nil, ErrInvalidCallback
 	}
@@ -198,11 +228,15 @@ func (c *Client) Complete(ctx context.Context, attempt Attempt, query url.Values
 	if err != nil {
 		return nil, err
 	}
+	if pending.subject != "" && profile.subject != pending.subject {
+		return nil, ErrIdentity
+	}
 
 	profile.CanUsePlan = tokens.canUsePlan()
 	lifetime, cancel := context.WithCancel(context.Background())
 	return &Session{
-		profile: profile, clientID: id, tokens: tokens, lifetime: lifetime, cancel: cancel,
+		profile: profile, hostID: pending.hostID, clientID: id, idToken: reply.IDToken,
+		tokens: tokens, lifetime: lifetime, cancel: cancel,
 	}, nil
 }
 
@@ -218,6 +252,7 @@ type Profile struct {
 	Name       string `json:"name"`
 	Email      string `json:"email"`
 	CanUsePlan bool   `json:"canUsePlan"`
+	subject    string
 }
 
 type Model struct {
@@ -225,15 +260,19 @@ type Model struct {
 	DisplayName string `json:"displayName"`
 }
 
-// Session holds this client's account data and tokens locally in memory.
+// Session owns the active tokens and serializes updates to its optional vault.
 type Session struct {
-	mu       sync.Mutex
-	profile  Profile
-	clientID string
-	tokens   tokens
-	models   map[string]bool
-	lifetime context.Context
-	cancel   context.CancelFunc
+	mu         sync.Mutex
+	profile    Profile
+	clientID   string
+	hostID     string
+	idToken    string
+	tokens     tokens
+	models     map[string]bool
+	lifetime   context.Context
+	cancel     context.CancelFunc
+	store      sessionvault.Store
+	remembered bool
 }
 
 func (s *Session) Profile() Profile {

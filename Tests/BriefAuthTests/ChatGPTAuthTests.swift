@@ -3,6 +3,21 @@ import Testing
 @testable import BriefAuth
 
 struct ChatGPTAuthTests {
+    @Test func externalBrowserOnlyOpensTheOfficialAuthorizationEndpoint() throws {
+        let attempt = try OAuthProtocol.Attempt(port: 54_321)
+        let url = try attempt.authorizationURL(appName: "Brief Studio", hostID: "urn:uuid:fixture", clientID: nil, identityHint: nil)
+        #expect(ChatGPTBrowser.isAuthorizationURL(url))
+        for link in [
+            "http://auth.openai.com/api/accounts/authorize",
+            "https://auth.openai.com.example/api/accounts/authorize",
+            "https://other.example@auth.openai.com/api/accounts/authorize",
+            "https://auth.openai.com/api/accounts/oauth/token",
+            "http://127.0.0.1:54321/auth/callback",
+        ] {
+            #expect(!ChatGPTBrowser.isAuthorizationURL(try #require(URL(string: link))))
+        }
+    }
+
     @Test func credentialNamespaceIsStableForATeamAndIsolatesAdHocBuilds() {
         let id = "app.briefstudio.macos"
         let old = Data([0xab, 0x01])

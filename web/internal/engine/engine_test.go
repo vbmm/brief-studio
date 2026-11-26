@@ -55,7 +55,7 @@ func TestGenerationUsesFactsAndSurvivesFedFailure(t *testing.T) {
 		}
 	}
 	doc, err := generate(context.Background(), "Surveiller   le calendrier.\n", "https://example.org/source", func(_ context.Context, prompt string) (string, error) {
-		for _, expected := range []string{"NQ\nCotation : 19800 USD", "ES\nCotation : indisponible", `"Surveiller le calendrier."`, `tableau JSON : []`} {
+		for _, expected := range []string{"NQ\nCotation : 19800 points", "ES\nCotation : indisponible", `"Surveiller le calendrier."`, `tableau JSON : []`} {
 			if !strings.Contains(prompt, expected) {
 				return "", errors.New("expected prompt evidence: " + expected)
 			}

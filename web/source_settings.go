@@ -64,9 +64,11 @@ func (store *sourceStore) path(provider sources.Provider) string {
 }
 
 type sourceStatus struct {
-	Target     string `json:"target"`
-	Configured bool   `json:"configured"`
-	Persistent bool   `json:"persistent"`
+	Target        string           `json:"target"`
+	Configured    bool             `json:"configured"`
+	Persistent    bool             `json:"persistent"`
+	Snapshot      *xSnapshotStatus `json:"snapshot,omitempty"`
+	BirdAvailable bool             `json:"birdAvailable,omitempty"`
 }
 
 func (store *sourceStore) status() map[sources.Provider]sourceStatus {
@@ -75,8 +77,11 @@ func (store *sourceStore) status() map[sources.Provider]sourceStatus {
 	result := make(map[sources.Provider]sourceStatus, len(optionalProviders))
 	for _, provider := range optionalProviders {
 		profile := store.entries[provider]
-		result[provider] = sourceStatus{profile.settings.Target, profile.settings.Token != "", profile.persistent}
+		result[provider] = sourceStatus{Target: profile.settings.Target, Configured: profile.settings.Token != "", Persistent: profile.persistent}
 	}
+	x := result[sources.X]
+	x.Snapshot = store.snapshotStatus(time.Now())
+	result[sources.X] = x
 	return result
 }
 
@@ -115,14 +120,14 @@ func (store *sourceStore) change(provider sources.Provider, change sourceChange)
 	if change.Persistent {
 		saved.Token = settings.Token
 	}
-	if err := writeSourceProfile(path, saved); err != nil {
+	if err := writeProfileJSON(path, saved); err != nil {
 		return http.StatusInternalServerError, errors.New("Impossible d’enregistrer les paramètres locaux.")
 	}
 	store.entries[provider] = sourceProfile{settings: settings, persistent: change.Persistent}
 	return http.StatusOK, nil
 }
 
-func writeSourceProfile(path string, profile storedSource) error {
+func writeProfileJSON(path string, profile any) error {
 	file, err := os.CreateTemp(filepath.Dir(path), ".source-*")
 	if err != nil {
 		return err
@@ -141,7 +146,11 @@ func sourceProvider(r *http.Request) sources.Provider {
 }
 
 func (s *studioServer) sourceStatus(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.sourceSettings.status())
+	states := s.sourceSettings.status()
+	x := states[sources.X]
+	x.BirdAvailable = s.refreshBird != nil
+	states[sources.X] = x
+	writeJSON(w, http.StatusOK, states)
 }
 
 func (s *studioServer) changeSource(w http.ResponseWriter, r *http.Request) {
@@ -172,6 +181,16 @@ func (s *studioServer) testSource(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Demande de test invalide.")
 		return
 	}
+	if provider == sources.X {
+		if feed, present := s.sourceSettings.localX(time.Now()); present {
+			if feed.Failure != "" {
+				writeError(w, http.StatusConflict, feed.Failure)
+			} else {
+				writeSourceTestResult(w, feed.Items)
+			}
+			return
+		}
+	}
 	settings := s.sourceSettings.settings(provider)
 	if settings.Token == "" {
 		writeError(w, http.StatusConflict, "Enregistre cette source avant de la tester.")
@@ -191,6 +210,10 @@ func (s *studioServer) testSource(w http.ResponseWriter, r *http.Request) {
 		writeError(w, sources.Status(err), err.Error())
 		return
 	}
+	writeSourceTestResult(w, items)
+}
+
+func writeSourceTestResult(w http.ResponseWriter, items []sources.Headline) {
 	result := struct {
 		Count  int    `json:"count"`
 		Latest string `json:"latest,omitempty"`
@@ -210,6 +233,14 @@ func (s *studioServer) testSource(w http.ResponseWriter, r *http.Request) {
 func (s *studioServer) gatherOptionalNews(ctx context.Context, cutoff time.Time) []engine.NewsFeed {
 	results := make([]chan engine.NewsFeed, 0, len(optionalProviders))
 	for _, provider := range optionalProviders {
+		if provider == sources.X {
+			if feed, present := s.sourceSettings.localX(cutoff); present {
+				ready := make(chan engine.NewsFeed, 1)
+				ready <- feed
+				results = append(results, ready)
+				continue
+			}
+		}
 		settings := s.sourceSettings.settings(provider)
 		if settings.Token == "" {
 			continue

@@ -197,6 +197,7 @@ func (s *studioServer) exportBrief(w http.ResponseWriter, r *http.Request) {
 		day, _ := time.Parse(time.RFC3339Nano, doc.GeneratedAt)
 		filename = "Brief-NQ-ES-" + day.Format("2006-01-02") + ".html"
 	}
+	doc.LocalGEX = ""
 	body, err := json.Marshal(doc)
 	if err != nil || strings.Count(viewer.Template, readerMarker) != 1 || len(body) > maxDocument {
 		writeError(w, http.StatusInternalServerError, "Le fichier HTML n’a pas pu être créé.")
