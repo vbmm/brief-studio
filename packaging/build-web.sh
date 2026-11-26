@@ -8,6 +8,16 @@ if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
     exit 1
 fi
 
+macos_min=12.0
+# Go 1.27 requires macOS 13 even with an older linker target.
+case $(go env GOVERSION) in
+    go1.23.*|go1.24.*|go1.25.*|go1.26.*) ;;
+    *)
+        printf '%s\n' 'Utilise Go 1.23.x à 1.26.x pour produire les ZIP compatibles macOS 12.' >&2
+        exit 1
+        ;;
+esac
+
 out="$PWD/dist/web-$version"
 mkdir -p "$out"
 staging=$(mktemp -d)
@@ -37,9 +47,15 @@ for target in darwin-arm64 darwin-amd64 windows-amd64 windows-arm64; do
     esac
     folder="$staging/Brief-Studio-Web"
     mkdir "$folder"
-    CGO_ENABLED="$cgo" GOOS="$platform" GOARCH="$cpu" go build -trimpath \
+    MACOSX_DEPLOYMENT_TARGET="$macos_min" CGO_CFLAGS="${CGO_CFLAGS:--O2 -g} -Werror=unguarded-availability-new" \
+        CGO_ENABLED="$cgo" GOOS="$platform" GOARCH="$cpu" go build -trimpath \
         -ldflags="-s -w -X main.version=$version" -o "$folder/$binary" ./web
     if [ "$platform" = darwin ]; then
+        declared_min=$(/usr/bin/vtool -show-build "$folder/$binary" | awk '$1 == "minos" { print $2 }')
+        if [ "$declared_min" != "$macos_min" ]; then
+            printf 'Cible macOS inattendue pour %s (%s, attendu %s).\n' "$target" "$declared_min" "$macos_min" >&2
+            exit 1
+        fi
         /usr/bin/codesign --force --sign - --identifier com.briefstudio.web "$folder/$binary"
         /usr/bin/codesign --verify --strict "$folder/$binary"
         cat > "$folder/$launcher" <<'EOF'

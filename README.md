@@ -6,6 +6,8 @@ Brief Studio génère des briefs en français sur les futures NQ et ES avec ton 
 
 ## Lancer la version web locale
 
+Les ZIP Mac ciblent macOS 12 Monterey et les versions ultérieures. Choisis ARM64 sur Apple Silicon et x64 sur Mac Intel.
+
 1. Décompresse le ZIP correspondant à ton système et à ton processeur. Sur Windows, ouvre **Brief-Studio-Web.exe**. Sur Mac, ouvre **Ouvrir-Brief-Studio.command**.
 2. Garde la fenêtre de lancement ouverte. Ton navigateur affiche Brief Studio. Si besoin, ouvre l’adresse indiquée dans la fenêtre de lancement.
 3. Choisis **Nouveau brief**, puis **Continuer avec ChatGPT**. L’autorisation et le retour à Brief Studio se font dans le même onglet. Choisis un modèle parmi ceux autorisés pour ton compte, puis clique sur **Générer**.
@@ -65,7 +67,7 @@ Avec ton compte Discord ouvert dans le navigateur, tu peux aussi sélectionner u
 
 Le jeton reste en mémoire tant que la fenêtre de lancement tourne. **Garder le jeton sur cet ordinateur** l’enregistre dans un fichier local du profil utilisateur, en clair pour une utilisation au prochain lancement. Garde ce dossier privé. La bibliothèque enregistre les briefs et leurs liens. Les jetons ne sont jamais transmis à ChatGPT ni inclus dans un export.
 
-Pour lancer depuis le code source avec Go 1.23 ou ultérieur, exécute `go run ./web`. L’option `--no-browser` affiche uniquement l’adresse et `--data-dir` permet de choisir le dossier de stockage. `go test ./...` vérifie le moteur et le serveur. `packaging/build-web.sh` construit les ZIP macOS et Windows x64 et ARM64 et leurs sommes SHA-256 dans `dist/web-<version>/`. Les paquets de test macOS sont distribués sans notarisation. Si macOS bloque l’exécutable téléchargé, tu peux utiliser le lancement depuis le code source. **Mises à jour** vérifie les paquets web stables sur GitHub Releases. Les versions d’essai se téléchargent depuis la page des versions.
+Pour lancer depuis le code source avec Go 1.23 ou ultérieur, exécute `go run ./web`. L’option `--no-browser` affiche uniquement l’adresse et `--data-dir` permet de choisir le dossier de stockage. `go test ./...` vérifie le moteur et le serveur. Sur Mac, `packaging/build-web.sh` utilise Go 1.23.x à 1.26.x pour construire les ZIP macOS et Windows x64 et ARM64 et leurs sommes SHA-256 dans `dist/web-<version>/`. Le script vérifie la cible macOS 12 dans les deux binaires Mac. Les ZIP macOS utilisent une signature ad hoc. Si macOS bloque l’exécutable téléchargé, tu peux utiliser le lancement depuis le code source. **Mises à jour → Vérifier** propose un lien vers GitHub quand une version Web stable plus récente est disponible. Le téléchargement et l’installation se font manuellement.
 
 ## Lancer l’app native historique sur Mac
 
