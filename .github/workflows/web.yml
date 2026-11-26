@@ -1,0 +1,56 @@
+name: Brief Studio Web
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go test ./...
+      - name: Vérifier le lancement Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:CGO_ENABLED = '0'
+          $exe = Join-Path $env:RUNNER_TEMP 'Brief-Studio-Web.exe'
+          go build -trimpath -o $exe ./web
+          if ($LASTEXITCODE -ne 0) { throw 'Compilation failed' }
+          $stdout = Join-Path $env:RUNNER_TEMP 'brief-launch.txt'
+          $profile = Join-Path $env:RUNNER_TEMP 'brief-profile'
+          $app = Start-Process $exe -ArgumentList @('--no-browser', '--data-dir', ('"' + $profile + '"')) -RedirectStandardOutput $stdout -PassThru
+          try {
+            $match = $null
+            for ($attempt = 0; $attempt -lt 50; $attempt++) {
+              $match = Select-String -Path $stdout -Pattern '(http://127\.0\.0\.1:[0-9]+)/#key=([A-Za-z0-9_-]+)'
+              if ($match) { break }
+              if ($app.HasExited) { throw 'Local server exited' }
+              Start-Sleep -Milliseconds 100
+            }
+            if (-not $match) { throw 'Local server did not start' }
+            $base = $match.Matches[0].Groups[1].Value
+            $headers = @{ Origin = $base; 'X-BriefStudio-Request' = '1' }
+            $body = @{key = $match.Matches[0].Groups[2].Value} | ConvertTo-Json -Compress
+            Invoke-WebRequest "$base/api/bootstrap" -Method Post -Headers $headers -ContentType 'application/json' -Body $body -SessionVariable browser | Out-Null
+            $sample = Invoke-RestMethod "$base/api/sample" -Headers $headers -WebSession $browser
+            if ($sample.schema -ne 'nq-es-brief/v1') { throw 'Sample endpoint returned an unexpected schema' }
+          } finally {
+            Stop-Process -Id $app.Id -ErrorAction SilentlyContinue
+            Remove-Item $stdout -ErrorAction SilentlyContinue
+          }

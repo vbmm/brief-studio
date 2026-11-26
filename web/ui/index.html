@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Brief Studio</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#brief">Aller au brief</a>
+  <header class="bar">
+    <div class="bar-inner">
+      <p class="brand"><span class="brand-symbol" aria-hidden="true">↗</span> Brief Studio</p>
+      <div class="bar-actions">
+        <button class="button bar-account" id="sources-button" type="button" disabled>Sources</button>
+        <button class="button bar-account" id="account-button" type="button" disabled>Compte ChatGPT</button>
+        <button class="button new-button" id="new-button" type="button" disabled><span aria-hidden="true">+</span> Nouveau brief</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="shell">
+    <aside class="archive" aria-labelledby="archive-title">
+      <div class="archive-controls">
+        <h2 id="archive-title">Bibliothèque locale</h2>
+        <nav aria-label="Bibliothèque locale">
+          <ul id="brief-list"></ul>
+          <p class="empty-library" id="empty-library" hidden>Aucun brief généré.</p>
+          <ul class="sample-list">
+            <li><button type="button" id="sample-button" class="archive-entry" disabled>Exemple NQ / ES</button></li>
+          </ul>
+        </nav>
+      </div>
+      <footer class="archive-footer"><button class="footer-button" id="updates-button" type="button" disabled>Mises à jour</button><span id="version"></span></footer>
+    </aside>
+
+    <main id="brief" tabindex="-1">
+      <p class="notice" id="notice" role="status" aria-live="polite">Ouverture de Brief Studio…</p>
+      <button class="button button-secondary" type="button" id="retry-button" hidden>Réessayer</button>
+      <div id="reading" hidden>
+        <header class="editorial-head">
+          <div class="report-meta">
+            <span class="contract-tag">NQ / ES</span>
+            <time id="brief-date"></time>
+            <span id="demo-tag" class="demo-tag" hidden>Exemple</span>
+          </div>
+          <h1 id="brief-title"></h1>
+          <a class="button button-secondary" id="export-link" download>Exporter en HTML <span aria-hidden="true">↓</span></a>
+        </header>
+        <div class="editorial-grid">
+          <article id="brief-text" aria-labelledby="brief-title"></article>
+          <nav id="toc" aria-label="Sommaire" hidden>
+            <h2>Sommaire</h2>
+            <ul id="toc-items"></ul>
+          </nav>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="composer" aria-labelledby="composer-title">
+    <div class="dialog-content">
+      <h2 id="composer-title">Nouveau brief</h2>
+      <p id="composer-status" class="notice" role="status" aria-live="polite" hidden></p>
+      <p id="needs-account" hidden>Connecte ton compte ChatGPT pour générer une lecture de marché NQ / ES.</p>
+      <form method="post" action="/auth/start" id="composer-signin" hidden>
+        <button class="button button-primary" type="submit">Continuer avec ChatGPT <span aria-hidden="true">↗</span></button>
+      </form>
+      <form id="generator" hidden>
+        <div class="field">
+          <label for="model-picker">Modèle ChatGPT</label>
+          <select id="model-picker" name="model" required></select>
+        </div>
+        <div class="field">
+          <label for="note">Contexte macro <span>· facultatif</span></label>
+          <textarea id="note" name="note" rows="4" maxlength="4000" placeholder="Ex. une publication à surveiller"></textarea>
+        </div>
+        <div class="field">
+          <label for="source-url">Lien de la source <span>· facultatif</span></label>
+          <input id="source-url" name="sourceURL" type="url" maxlength="2048" placeholder="https://…">
+        </div>
+        <p class="fine-print">La note est transmise à OpenAI et incluse dans le brief exporté.</p>
+        <div class="form-actions">
+          <button class="button button-secondary" id="composer-close" type="button">Fermer</button>
+          <button class="button button-primary" id="generate-button" type="submit">Générer</button>
+        </div>
+      </form>
+      <div class="form-actions" id="composer-cancel-actions">
+        <button class="button button-secondary" id="composer-dismiss" type="button">Fermer</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="sources" aria-labelledby="sources-title">
+    <div class="dialog-content">
+      <h2 id="sources-title">Sources</h2>
+      <p class="sources-default"><strong>Incluses</strong> Cotations NQ / ES, calendrier économique et actualités publiques.</p>
+      <p id="sources-status" class="notice" role="status" aria-live="polite" hidden></p>
+      <div class="source-grid" id="source-grid" hidden>
+        <form class="source-form" id="source-discord" aria-labelledby="discord-title" autocomplete="off">
+          <div class="source-heading">
+            <h3 id="discord-title">Discord</h3>
+            <span class="source-state" id="discord-state"></span>
+          </div>
+          <p class="fine-print">Les extraits retenus sont transmis à OpenAI. Leurs liens peuvent figurer dans l’export HTML.</p>
+          <div class="field">
+            <label for="discord-target">Salon Discord</label>
+            <input id="discord-target" type="text" maxlength="256" placeholder="ID ou lien du salon" autocomplete="off" spellcheck="false" autocapitalize="none" required>
+          </div>
+          <div class="field">
+            <label for="discord-token">Jeton du bot Discord</label>
+            <input id="discord-token" type="password" maxlength="4096" autocomplete="off" spellcheck="false" autocapitalize="none" aria-describedby="discord-token-hint">
+            <small class="fine-print" id="discord-token-hint"></small>
+          </div>
+          <label class="source-persist"><input id="discord-persistent" type="checkbox" autocomplete="off"> Garder le jeton sur cet ordinateur</label>
+          <div class="source-actions">
+            <button class="button button-primary" id="discord-save" type="submit" aria-label="Enregistrer Discord">Enregistrer</button>
+            <button class="button button-secondary" id="discord-test" type="button" aria-label="Tester Discord">Tester</button>
+            <button class="source-disconnect" id="discord-remove" type="button" aria-label="Déconnecter Discord" hidden>Déconnecter</button>
+          </div>
+          <p id="discord-action-hint" class="fine-print source-action-hint" hidden></p>
+          <p id="discord-status" class="notice" role="status" aria-live="polite" hidden></p>
+        </form>
+
+        <form class="source-form" id="source-x" aria-labelledby="x-title" autocomplete="off">
+          <div class="source-heading">
+            <h3 id="x-title">X</h3>
+            <span class="source-state" id="x-state"></span>
+          </div>
+          <p class="fine-print">Le brief et l’export conservent les liens des publications. X peut facturer les lectures du test et de la génération.</p>
+          <div class="field">
+            <label for="x-target">Comptes X <span>séparés par des virgules</span></label>
+            <input id="x-target" type="text" maxlength="256" placeholder="@deitaone, @autre" autocomplete="off" spellcheck="false" autocapitalize="none" required>
+          </div>
+          <div class="field">
+            <label for="x-token">Jeton Bearer X</label>
+            <input id="x-token" type="password" maxlength="4096" autocomplete="off" spellcheck="false" autocapitalize="none" aria-describedby="x-token-hint">
+            <small class="fine-print" id="x-token-hint"></small>
+          </div>
+          <label class="source-persist"><input id="x-persistent" type="checkbox" autocomplete="off"> Garder le jeton sur cet ordinateur</label>
+          <div class="source-actions">
+            <button class="button button-primary" id="x-save" type="submit" aria-label="Enregistrer X">Enregistrer</button>
+            <button class="button button-secondary" id="x-test" type="button" aria-label="Tester X">Tester</button>
+            <button class="source-disconnect" id="x-remove" type="button" aria-label="Déconnecter X" hidden>Déconnecter</button>
+          </div>
+          <p id="x-action-hint" class="fine-print source-action-hint" hidden></p>
+          <p id="x-status" class="notice" role="status" aria-live="polite" hidden></p>
+        </form>
+      </div>
+      <p class="fine-print">Les jetons que tu choisis de conserver sont enregistrés en clair dans le profil local.</p>
+      <div class="form-actions">
+        <button class="button button-secondary" id="sources-close" type="button">Fermer</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="account" aria-labelledby="account-title">
+    <div class="dialog-content">
+      <h2 id="account-title">Compte ChatGPT</h2>
+      <p id="account-identity"></p>
+      <p class="notice" id="account-status" role="status" aria-live="polite" hidden></p>
+      <form method="post" action="/auth/start" id="account-signin" hidden>
+        <button class="button button-primary" type="submit">Continuer avec ChatGPT <span aria-hidden="true">↗</span></button>
+      </form>
+      <div class="form-actions">
+        <button class="button button-secondary" id="account-close" type="button">Fermer</button>
+        <button class="button button-secondary" id="signout-button" type="button" hidden>Déconnecter</button>
+      </div>
+    </div>
+  </dialog>
+  <dialog id="updates" aria-labelledby="updates-title">
+    <div class="dialog-content">
+      <h2 id="updates-title">Mises à jour</h2>
+      <p id="updates-version"></p>
+      <p id="updates-status" class="notice" role="status" aria-live="polite" hidden></p>
+      <a class="button button-primary" id="update-link" target="_blank" rel="noopener noreferrer" hidden>Télécharger sur GitHub <span aria-hidden="true">↗</span></a>
+      <div class="form-actions">
+        <button class="button button-secondary" id="updates-close" type="button">Fermer</button>
+        <button class="button button-secondary" id="updates-check" type="button">Vérifier</button>
+      </div>
+    </div>
+  </dialog>
+  <noscript>Active JavaScript pour ouvrir ta bibliothèque locale et générer des briefs.</noscript>
+</body>
+</html>
