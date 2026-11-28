@@ -25,7 +25,7 @@ import (
 	"briefstudio/web/internal/sources"
 )
 
-var version = "0.3.7"
+var version = "0.3.8"
 
 //go:embed ui/*
 var webAssets embed.FS

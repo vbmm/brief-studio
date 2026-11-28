@@ -115,7 +115,10 @@ func (c *Client) StartReturning(hostID, callbackURL string, session *Session) (A
 	if session != nil {
 		session.mu.Lock()
 		if session.hostID == hostID && clientID.MatchString(session.clientID) && validSubject(session.profile.subject) {
-			pending.clientID, pending.subject, hint = session.clientID, session.profile.subject, session.idToken
+			pending.clientID, pending.subject = session.clientID, session.profile.subject
+			if session.lifetime != nil && session.lifetime.Err() == nil && session.tokens.usable(c.now()) {
+				hint = session.idToken
+			}
 		}
 		session.mu.Unlock()
 	}
@@ -236,7 +239,7 @@ func (c *Client) Complete(ctx context.Context, attempt Attempt, query url.Values
 	lifetime, cancel := context.WithCancel(context.Background())
 	return &Session{
 		profile: profile, hostID: pending.hostID, clientID: id, idToken: reply.IDToken,
-		tokens: tokens, lifetime: lifetime, cancel: cancel,
+		tokens: tokens, now: c.now, lifetime: lifetime, cancel: cancel,
 	}, nil
 }
 
@@ -269,6 +272,7 @@ type Session struct {
 	idToken    string
 	tokens     tokens
 	models     map[string]bool
+	now        func() time.Time
 	lifetime   context.Context
 	cancel     context.CancelFunc
 	store      sessionvault.Store

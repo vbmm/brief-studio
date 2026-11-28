@@ -9,7 +9,10 @@ import (
 	_ "time/tzdata" // Keep New York session calculations available without system zoneinfo.
 )
 
-const quoteAgeLimit = 45 * time.Minute
+const (
+	quoteAgeLimit      = 45 * time.Minute
+	recapQuoteAgeLimit = 7 * 24 * time.Hour
+)
 
 var newYork = func() *time.Location {
 	zone, err := time.LoadLocation("America/New_York")
@@ -44,9 +47,10 @@ type session struct {
 
 type observation struct {
 	instrument
-	quote   *quote
-	session *session
-	message string
+	quote         *quote
+	lastSeenQuote *quote
+	session       *session
+	message       string
 }
 
 func fetchObservation(ctx context.Context, load fetchFunc, future instrument, cutoff time.Time) observation {
@@ -109,6 +113,9 @@ func decodeObservation(body []byte, future instrument, cutoff time.Time) observa
 		result.message = "Horodatage de cotation incohérent."
 	case age > quoteAgeLimit:
 		result.message = "Dernière cotation trop ancienne (" + localDate(observed) + " ET)."
+		if age <= recapQuoteAgeLimit {
+			result.lastSeenQuote = &quote{price: m.RegularMarketPrice, time: observed}
+		}
 	default:
 		result.quote = &quote{price: m.RegularMarketPrice, time: observed}
 	}

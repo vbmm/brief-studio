@@ -45,6 +45,11 @@ func oauthToken(value string) bool {
 	return true
 }
 
+// An expired access token can still be usable with a refresh grant.
+func (t tokens) usable(now time.Time) bool {
+	return t.access != "" && (t.refresh != "" || now.Before(t.expiry))
+}
+
 func (t tokens) canUsePlan() bool {
 	return hasScope(t.scope, planScope) && hasScope(t.scope, "resource.invoke")
 }
@@ -78,17 +83,18 @@ func (c *Client) accessToken(ctx context.Context, s *Session) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", transportError(err)
 	}
-	if s.tokens.access == "" {
+	now := c.now()
+	if !s.tokens.usable(now) {
+		if s.tokens.access != "" {
+			s.expireLocked()
+		}
 		return "", ErrSessionExpired
 	}
 	if !s.tokens.canUsePlan() {
 		return "", ErrPlanNotGranted
 	}
-	if c.now().Add(30 * time.Second).Before(s.tokens.expiry) {
+	if s.tokens.refresh == "" || now.Add(30*time.Second).Before(s.tokens.expiry) {
 		return s.tokens.access, nil
-	}
-	if s.tokens.refresh == "" {
-		return "", ErrSessionExpired
 	}
 
 	var reply tokenReply
@@ -101,11 +107,7 @@ func (c *Client) accessToken(ctx context.Context, s *Session) (string, error) {
 	if err != nil {
 		var response *providerError
 		if errors.As(err, &response) && (expiredRefresh(response.code) || response.status == http.StatusUnauthorized) {
-			s.tokens = tokens{}
-			s.idToken = ""
-			s.models = nil
-			s.profile.CanUsePlan = false
-			s.persistLocked()
+			s.expireLocked()
 			return "", ErrSessionExpired
 		}
 		return "", publicError(err)
@@ -124,9 +126,8 @@ func (c *Client) accessToken(ctx context.Context, s *Session) (string, error) {
 	return renewed.access, nil
 }
 
-// A resource can reject an access token before its advertised expiry. Keep
-// the refresh grant and renew on the next operation instead of replaying the
-// rejected request or asking the user to sign in immediately.
+// A resource can reject an access token before its advertised expiry. When
+// possible, renew on the next operation instead of replaying the request.
 func (c *Client) resourceError(s *Session, access string, err error) error {
 	public := publicError(err)
 	if !errors.Is(public, ErrSessionExpired) {
@@ -134,11 +135,31 @@ func (c *Client) resourceError(s *Session, access string, err error) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.lifetime.Err() == nil && s.tokens.access == access {
+	if s.lifetime.Err() != nil {
+		return ErrSignedOut
+	}
+	if s.tokens.access == "" {
+		return ErrSessionExpired
+	}
+	if s.tokens.access == access {
+		if s.tokens.refresh == "" {
+			s.expireLocked()
+			return ErrSessionExpired
+		}
 		s.tokens.expiry = c.now()
 		s.persistLocked()
 	}
 	return ErrAccessExpired
+}
+
+// expireLocked removes exhausted credentials while retaining the registration
+// that lets the same account authorize again.
+func (s *Session) expireLocked() {
+	s.tokens = tokens{}
+	s.idToken = ""
+	s.models = nil
+	s.profile.CanUsePlan = false
+	s.persistLocked()
 }
 
 func expiredRefresh(code string) bool {

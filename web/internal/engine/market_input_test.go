@@ -144,7 +144,7 @@ func TestPublicGammaIsLocalAndRetainsImportedProfileLevels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(doc.Text, "Avec GEX public") || !strings.Contains(doc.Text, "VWAP 20\u202f015,50") ||
+	if !strings.Contains(doc.Text, "Sans GEX · panneau public facultatif") || !strings.Contains(doc.Text, "VWAP 20\u202f015,50") ||
 		strings.Contains(doc.Text, "20\u202f477,25") || strings.Contains(doc.Text, "repères gamma importés") ||
 		!strings.Contains(doc.LocalGEX, "**NQ** call wall 20\u202f477,25") ||
 		!strings.Contains(doc.LocalGEX, "**ES** Aucun relevé récent.") {

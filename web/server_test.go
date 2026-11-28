@@ -62,22 +62,30 @@ func TestLocalBootstrapAndOrigin(t *testing.T) {
 	if w := request(s, "POST", "/api/generate", `{"model":"example"}`, cookies[0]); w.Code != http.StatusUnauthorized {
 		t.Fatalf("generation without ChatGPT status = %d", w.Code)
 	}
+	if w := request(s, "POST", "/api/generate", `{"marketRecap":true}`, nil); w.Code != http.StatusUnauthorized {
+		t.Fatalf("recap without a local browser session status = %d", w.Code)
+	}
+	if w := request(s, "POST", "/api/account/remember", `{}`, cookies[0]); w.Code != http.StatusUnauthorized {
+		t.Fatalf("vault retry without an account status = %d", w.Code)
+	}
 	for _, tc := range []struct{ host, origin, fetchSite, header string }{
 		{"example.invalid", s.origin, "same-origin", "1"},
 		{s.host, "https://example.invalid", "cross-site", "1"},
 		{s.host, "null", "same-origin", "1"},
 		{s.host, s.origin, "same-origin", ""},
 	} {
-		r := httptest.NewRequest("POST", s.origin+"/api/signout", nil)
-		r.Host = tc.host
-		r.Header.Set("Origin", tc.origin)
-		r.Header.Set("Sec-Fetch-Site", tc.fetchSite)
-		r.Header.Set("X-BriefStudio-Request", tc.header)
-		r.AddCookie(cookies[0])
-		w := httptest.NewRecorder()
-		s.handler().ServeHTTP(w, r)
-		if w.Code != http.StatusForbidden {
-			t.Fatalf("unexpected cross-origin/host status %d for %+v", w.Code, tc)
+		for _, path := range []string{"/api/signout", "/api/account/remember", "/api/generate"} {
+			r := httptest.NewRequest("POST", s.origin+path, strings.NewReader(`{"marketRecap":true}`))
+			r.Host = tc.host
+			r.Header.Set("Origin", tc.origin)
+			r.Header.Set("Sec-Fetch-Site", tc.fetchSite)
+			r.Header.Set("X-BriefStudio-Request", tc.header)
+			r.AddCookie(cookies[0])
+			w := httptest.NewRecorder()
+			s.handler().ServeHTTP(w, r)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("unexpected cross-origin/host status %d at %s for %+v", w.Code, path, tc)
+			}
 		}
 	}
 }
@@ -115,6 +123,8 @@ func TestArchiveAndOfflineExport(t *testing.T) {
 	cookie := &http.Cookie{Name: s.cookieName, Value: s.browserKey}
 	doc := engine.Sample()
 	doc.Text += "\n</script><script>alert(1)</script>\n"
+	doc.MarketClosed = true
+	doc.LocalGEX = "Relevé FlashAlpha réservé au lecteur local."
 	id, err := s.library.save(doc)
 	if err != nil {
 		t.Fatal(err)
@@ -134,7 +144,8 @@ func TestArchiveAndOfflineExport(t *testing.T) {
 	}
 	payload, err := base64.StdEncoding.DecodeString(matched[1])
 	var exported engine.Document
-	if err != nil || json.Unmarshal(payload, &exported) != nil || exported.Text != doc.Text {
+	if err != nil || json.Unmarshal(payload, &exported) != nil || exported.Text != doc.Text ||
+		!exported.MarketClosed || exported.LocalGEX != "" {
 		t.Fatal("exported payload does not match saved brief")
 	}
 }

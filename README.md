@@ -2,7 +2,7 @@
 
 Brief Studio génère des briefs en français sur les futures NQ et ES avec ton compte ChatGPT. La version web locale fonctionne depuis un navigateur sur macOS et Windows. Chaque brief peut aussi être exporté en HTML autonome pour la lecture hors ligne.
 
-[Télécharger Brief Studio Web 0.3.7](https://github.com/vbmm/brief-studio/releases/tag/v0.3.7) · [Voir toutes les versions](https://github.com/vbmm/brief-studio/releases) · [Licence MIT](LICENSE)
+[Télécharger la dernière version stable](https://github.com/vbmm/brief-studio/releases/latest) · [Voir toutes les versions](https://github.com/vbmm/brief-studio/releases) · [Licence MIT](LICENSE)
 
 ## Lancer la version web locale
 
@@ -10,11 +10,13 @@ Les ZIP Mac ciblent macOS 12 Monterey et les versions ultérieures. Choisis ARM6
 
 1. Décompresse le ZIP correspondant à ton système et à ton processeur. Sur Windows, ouvre **Brief-Studio-Web.exe**. Sur Mac, ouvre **Ouvrir-Brief-Studio.command**.
 2. Garde la fenêtre de lancement ouverte. Ton navigateur affiche Brief Studio. Si besoin, ouvre l’adresse indiquée dans la fenêtre de lancement.
-3. Choisis **Nouveau brief**, puis **Continuer avec ChatGPT**. L’autorisation et le retour à Brief Studio se font dans le même onglet. Choisis un modèle parmi ceux autorisés pour ton compte, puis clique sur **Générer**.
+3. En séance, choisis **Nouveau brief**, puis **Continuer avec ChatGPT**. L’autorisation et le retour à Brief Studio se font dans le même onglet. Choisis un modèle parmi ceux autorisés pour ton compte, puis clique sur **Générer**.
+
+Pendant une fermeture identifiée des futures NQ et ES, **Nouveau brief** propose **Générer la synthèse**. La synthèse factuelle date les dernières cotations vérifiées, indique la référence RTH disponible et s’exporte en HTML. Elle est calculée localement à partir des données publiques et des notes saisies. La 0.3.8 reconnaît les fermetures régulières et le créneau Thanksgiving vérifié du 26 novembre 2026. Durant les autres horaires spéciaux et en séance, le contrôle de fraîcheur habituel s’applique.
 
 Les paquets web intègrent le serveur, le lecteur et le moteur. Leur lancement ne demande ni Go, ni Python, ni Codex. La connexion à ChatGPT et la génération nécessitent Internet. Le serveur écoute sur `127.0.0.1` uniquement. Les briefs restent dans `%LOCALAPPDATA%\Brief Studio Web\briefs` sur Windows et `~/Library/Application Support/Brief Studio Web/briefs` sur Mac. Utilise **Exporter en HTML** pour obtenir un fichier lisible sur un autre ordinateur.
 
-Brief Studio retrouve le compte à la relance grâce au Trousseau macOS ou à la protection DPAPI de l’utilisateur Windows. Le compte est lié au profil local et se renouvelle lors de l’utilisation. Une nouvelle version Mac signée ad hoc dispose de sa propre entrée de Trousseau. Si le forfait ou l’autorisation a changé, OpenAI peut demander de se reconnecter. **Compte ChatGPT → Déconnecter** efface la session de cette version.
+**Compte ChatGPT** indique si la connexion est mémorisée, temporaire ou à renouveler. Une autorisation renouvelable est stockée dans le Trousseau macOS ou protégée par DPAPI sous Windows. Si la sauvegarde échoue et que le coffre a pu être ouvert, **Ressayer la sauvegarde** réessaie pour la session en cours. Une nouvelle version Mac signée ad hoc dispose de sa propre entrée de Trousseau. **Déconnecter** efface la session de cette version.
 
 ### Planifier un brief
 
@@ -29,7 +31,7 @@ Le brief de base utilise les cotations différées NQ/ES de Yahoo Finance, les c
 Dans **Nouveau brief**, choisis le mode adapté au relevé disponible.
 
 - **Sans GEX**, le mode par défaut. Le brief ignore le gamma. Les niveaux récents de profil ou VWAP restent utilisables.
-- **Avec GEX public**. Brief Studio interroge l’API publique de FlashAlpha pour les options sur les futures CME NQ et ES. Le relevé est différé et provient d’une séance précédente. Un seul contrat peut être disponible. Ouvre **Sources → Tester le GEX public** pour vérifier la couverture. Le relevé est conservé dans le lecteur et la bibliothèque locale, pour usage personnel. [Documentation FlashAlpha](https://flashalpha.com/docs/api-specification) · [Conditions FlashAlpha](https://flashalpha.com/terms)
+- **Afficher le GEX public**. Brief Studio interroge l’API publique de FlashAlpha pour les options sur les futures CME NQ et ES. Le relevé différé s’affiche localement s’il est disponible. En cas d’indisponibilité, le brief est généré et le panneau indique l’absence du relevé. Ouvre **Sources → Tester le GEX public** pour vérifier la couverture. [Documentation FlashAlpha](https://flashalpha.com/docs/api-specification) · [Conditions FlashAlpha](https://flashalpha.com/terms)
 - **Avec GEX importé**. Un relevé gamma récent pour au moins un contrat est requis. Tu peux importer NQ, ES ou les deux. Le brief indique la couverture de chaque contrat. Le signe du gamma sert de contexte et ne valide pas une direction à lui seul.
 
 Dans **Sources → Niveaux et GEX**, télécharge le modèle JSON si tu utilises tes propres données. Renseigne les valeurs de ton outil et importe le fichier.

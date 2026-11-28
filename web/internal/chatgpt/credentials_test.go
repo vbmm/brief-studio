@@ -18,6 +18,7 @@ const vaultHost = "urn:uuid:cbb4d1e4-99ab-4e9f-acc0-c50e6f1a2ad2"
 type fixtureVault struct {
 	record []byte
 	err    error
+	saves  int
 }
 
 func (v *fixtureVault) Load() ([]byte, error) {
@@ -28,6 +29,7 @@ func (v *fixtureVault) Load() ([]byte, error) {
 }
 
 func (v *fixtureVault) Save(record []byte) error {
+	v.saves++
 	if v.err != nil {
 		return v.err
 	}
@@ -128,6 +130,161 @@ func TestInvalidRefreshErasesCredentialsButReusesRegistration(t *testing.T) {
 		"state": {attempt.pending.state}, "code": {"fixture_code"}, "client_id": {"oaiapp_mismatch"},
 	}); !errors.Is(err, ErrInvalidCallback) {
 		t.Fatalf("substituted client was accepted: %v", err)
+	}
+}
+
+func TestTemporarySessionCanReconnectAfterExpiry(t *testing.T) {
+	now := time.Now()
+	session := rememberedFixture(now, &fixtureVault{})
+	session.tokens.refresh = ""
+	if _, connected, remembered := session.Status(); connected || remembered {
+		t.Error("expired temporary grant still reports an active session")
+	}
+	if session.ScheduleOwner() != "" {
+		t.Error("expired temporary grant can still authorize a scheduled brief")
+	}
+	c := fakeClient(func() time.Time { return now }, func(*http.Request) (*http.Response, error) {
+		t.Fatal("preparing a new sign-in made a provider request")
+		return nil, nil
+	})
+	_, destination, err := c.StartReturning(vaultHost, "http://127.0.0.1:19901/auth/callback", session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorize, err := url.Parse(destination)
+	if err != nil || authorize.Query().Get("client_id") != idFixture || authorize.Query().Has("id_token_hint") {
+		t.Error("reconnect did not reuse just the verified registration")
+	}
+}
+
+func TestTemporarySessionUsesRemainingTokenLifetime(t *testing.T) {
+	now := time.Now()
+	session := makeSession(now, "openid profile resource.invoke "+planScope)
+	session.tokens.refresh = ""
+	session.tokens.expiry = now.Add(10 * time.Second)
+	c := fakeClient(func() time.Time { return now }, func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() != modelsURL {
+			t.Fatal("unexpected provider call")
+		}
+		return catalogResponse(), nil
+	})
+	if models, err := c.Models(context.Background(), session); err != nil || len(models) != 1 {
+		t.Fatalf("usable temporary grant was rejected: %v", err)
+	}
+}
+
+func TestRejectedTemporarySessionNeedsReconnect(t *testing.T) {
+	now := time.Now()
+	session := makeSession(now, "openid profile resource.invoke "+planScope)
+	session.hostID, session.idToken = vaultHost, "fixture_identity"
+	session.profile.subject = "fixture_subject"
+	session.tokens.refresh = ""
+	calls := 0
+	c := fakeClient(func() time.Time { return now }, func(r *http.Request) (*http.Response, error) {
+		calls++
+		if r.URL.String() != modelsURL {
+			t.Fatal("rejected temporary grant tried a refresh exchange")
+		}
+		return fixtureResponse(401, "application/json", `{"error":{"code":"invalid_token"}}`), nil
+	})
+	if _, err := c.Models(context.Background(), session); !errors.Is(err, ErrSessionExpired) {
+		t.Errorf("terminal access rejection was not recognized: %v", err)
+	}
+	if state := session.State(); state.Connected || state.Remembered || state.Persistence != PersistenceReauthNeeded || session.ScheduleOwner() != "" {
+		t.Error("terminal access rejection still reports an active session")
+	}
+	if _, err := c.Models(context.Background(), session); !errors.Is(err, ErrSessionExpired) || calls != 1 {
+		t.Errorf("rejected token was replayed or retried: %v, %d calls", err, calls)
+	}
+}
+
+func TestSessionStateAndLocalRememberRetry(t *testing.T) {
+	now := time.Now()
+	var absent *Session
+	if state := absent.State(); state.Connected || state.Persistence != PersistenceSignedOut || state.CanRetryRemember {
+		t.Fatal("missing session did not report signed out")
+	}
+	inMemory := makeSession(now, scopes)
+	inMemory.Remember(nil)
+	if state := inMemory.State(); !state.Connected || state.Persistence != PersistenceVaultUnavailable || state.CanRetryRemember {
+		t.Fatal("missing OS vault was not distinguished from a temporary grant")
+	}
+
+	vault := &fixtureVault{err: sessionvault.ErrUnavailable}
+	session := rememberedFixture(now, vault)
+	if state := session.State(); !state.Connected || state.Remembered || state.Persistence != PersistenceVaultUnavailable || !state.CanRetryRemember {
+		t.Fatal("failed vault write was not reported as locally retryable")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := session.RetryRemember(ctx); got != PersistenceVaultUnavailable || vault.saves != 1 {
+		t.Fatal("cancelled request attempted to save credentials")
+	}
+	vault.err = nil
+	if got := session.RetryRemember(context.Background()); got != PersistenceRemembered || vault.saves != 2 {
+		t.Fatal("active session did not persist after the OS vault recovered")
+	}
+	if state := session.State(); !state.Connected || !state.Remembered || state.Persistence != PersistenceRemembered || state.CanRetryRemember {
+		t.Fatal("stored credentials did not report as remembered")
+	}
+	c := fakeClient(func() time.Time { return now }, func(*http.Request) (*http.Response, error) {
+		t.Fatal("restoring an existing record made a provider request")
+		return nil, nil
+	})
+	restored, err := c.RestoreSession(vaultHost, vault)
+	if err != nil || restored.State().Persistence != PersistenceRemembered {
+		t.Fatalf("remembered credentials did not survive relaunch: %v", err)
+	}
+
+	temporary := makeSession(now, "openid profile resource.invoke "+planScope)
+	temporary.hostID, temporary.idToken = vaultHost, "fixture_identity"
+	temporary.profile.subject = "fixture_subject"
+	temporary.tokens.refresh = ""
+	temporaryVault := &fixtureVault{}
+	temporary.Remember(temporaryVault)
+	if state := temporary.State(); !state.Connected || state.Remembered || state.Persistence != PersistenceTemporary || state.CanRetryRemember {
+		t.Fatal("temporary grant did not report as session-only")
+	}
+	if got := temporary.RetryRemember(context.Background()); got != PersistenceTemporary || temporaryVault.saves != 1 {
+		t.Fatal("retry attempted to save non-refreshable credentials")
+	}
+	restored, err = c.RestoreSession(vaultHost, temporaryVault)
+	if err != nil || restored == nil || restored.State().Persistence != PersistenceReauthNeeded {
+		t.Fatalf("temporary grant did not retain only its registration: %v", err)
+	}
+}
+
+func TestRejectedRefreshableSessionRenewsOnNextOperation(t *testing.T) {
+	now := time.Now()
+	session := makeSession(now, scopes)
+	var catalogs, rotations int
+	c := fakeClient(func() time.Time { return now }, func(r *http.Request) (*http.Response, error) {
+		switch r.URL.String() {
+		case modelsURL:
+			catalogs++
+			if catalogs == 1 {
+				return fixtureResponse(401, "application/json", `{"error":{"code":"invalid_token"}}`), nil
+			}
+			if r.Header.Get("Authorization") != "Bearer new_access" {
+				t.Fatal("next operation reused the rejected access token")
+			}
+			return catalogResponse(), nil
+		case tokenURL:
+			rotations++
+			return fixtureResponse(200, "application/json", `{"access_token":"new_access","refresh_token":"new_refresh","token_type":"Bearer","expires_in":3600}`), nil
+		default:
+			t.Fatal("unexpected provider call")
+			return nil, nil
+		}
+	})
+	if _, err := c.Models(context.Background(), session); !errors.Is(err, ErrAccessExpired) || catalogs != 1 || rotations != 0 {
+		t.Fatalf("first rejection unexpectedly replayed or refreshed: %v", err)
+	}
+	if !session.State().Connected {
+		t.Fatal("refreshable session asked for sign-in prematurely")
+	}
+	if models, err := c.Models(context.Background(), session); err != nil || len(models) != 1 || catalogs != 2 || rotations != 1 {
+		t.Fatalf("next catalog request did not use the refreshed session: %v", err)
 	}
 }
 

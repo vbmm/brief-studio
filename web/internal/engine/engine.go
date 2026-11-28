@@ -19,12 +19,13 @@ import (
 const schema = "nq-es-brief/v1"
 
 type Document struct {
-	Schema      string   `json:"schema"`
-	Title       string   `json:"title"`
-	GeneratedAt string   `json:"generatedAt"`
-	Text        string   `json:"text"`
-	Sources     []Source `json:"sources,omitempty"`
-	LocalGEX    string   `json:"localGex,omitempty"`
+	Schema       string   `json:"schema"`
+	Title        string   `json:"title"`
+	GeneratedAt  string   `json:"generatedAt"`
+	Text         string   `json:"text"`
+	Sources      []Source `json:"sources,omitempty"`
+	LocalGEX     string   `json:"localGex,omitempty"`
+	MarketClosed bool     `json:"marketClosed,omitempty"`
 }
 
 type Source struct {
@@ -95,20 +96,23 @@ func generateWithSources(ctx context.Context, note, sourceURL string, analyze fu
 	if err := ctx.Err(); err != nil {
 		return Document{}, err
 	}
-	if analyze == nil {
-		return Document{}, errors.New("Aucun modèle n’est disponible pour la génération.")
-	}
 	cutoff := now()
+	marketClosed := MarketClosed(cutoff)
+	if analyze == nil && !marketClosed {
+		return Document{}, ErrMarketOpen
+	}
 	market, err := selectMarketInput(input.GEXMode, input.Market, cutoff)
 	if err != nil {
 		return Document{}, err
 	}
 	market.unreadable = input.MarketReadFailed
 	var localGEX string
+	var hasPublicGEX bool
 	if input.GEXMode == PublicGEX {
 		localGEX, err = publicGEXReadout(input.PublicGEX, cutoff)
-		if err != nil {
-			return Document{}, err
+		hasPublicGEX = err == nil
+		if !hasPublicGEX {
+			localGEX = "## GEX public différé\n\nAucun relevé récent et vérifiable pour NQ ou ES."
 		}
 	}
 	feedsCtx, cancel := context.WithCancel(ctx)
@@ -132,10 +136,10 @@ func generateWithSources(ctx context.Context, note, sourceURL string, analyze fu
 	if ctx.Err() != nil {
 		return Document{}, ctx.Err()
 	}
-	if observations[0].quote == nil && observations[1].quote == nil {
+	if !marketClosed && observations[0].quote == nil && observations[1].quote == nil {
 		return Document{}, fmt.Errorf("Aucune cotation récente. NQ : %s ES : %s", observations[0].message, observations[1].message)
 	}
-	if input.News != nil {
+	if input.News != nil && !marketClosed {
 		go func() { newsChan <- input.News(feedsCtx, cutoff) }()
 	} else {
 		newsChan <- nil
@@ -161,18 +165,21 @@ func generateWithSources(ctx context.Context, note, sourceURL string, analyze fu
 	if err := ctx.Err(); err != nil {
 		return Document{}, err
 	}
-	response, err := analyze(ctx, buildPrompt(observations, note, feed, calendar)+market.prompt()+newsPrompt(news))
-	if err != nil {
-		return Document{}, err
+	var views assessment
+	if !marketClosed {
+		response, err := analyze(ctx, buildPrompt(observations, note, feed, calendar)+market.prompt()+newsPrompt(news))
+		if err != nil {
+			return Document{}, err
+		}
+		if err := ctx.Err(); err != nil {
+			return Document{}, err
+		}
+		views, err = parseAssessment(response)
+		if err != nil {
+			return Document{}, err
+		}
 	}
-	if err := ctx.Err(); err != nil {
-		return Document{}, err
-	}
-	views, err := parseAssessment(response)
-	if err != nil {
-		return Document{}, err
-	}
-	document := render(observations, views, note, source, feed, calendar, news, market, cutoff, now())
+	document := render(observations, views, note, source, feed, calendar, news, market, marketClosed, hasPublicGEX, cutoff, now())
 	document.LocalGEX = localGEX
 	return document, nil
 }
@@ -317,21 +324,33 @@ func (m modelView) watchText(obs observation, hasContext bool, imported sources.
 	}
 }
 
-func render(observations [2]observation, assessed assessment, note string, source *Source, feed fedFeed, calendar economicCalendar, news []NewsFeed, market marketInput, cutoff, finished time.Time) Document {
+func render(observations [2]observation, assessed assessment, note string, source *Source, feed fedFeed, calendar economicCalendar, news []NewsFeed, market marketInput, marketClosed, hasPublicGEX bool, cutoff, finished time.Time) Document {
 	doc := Document{
 		Schema: schema, GeneratedAt: iso(finished),
 		Title: "Brief NQ / ES · " + cutoff.In(newYork).Format("2006-01-02"),
 	}
 	var draft strings.Builder
-	fmt.Fprintf(&draft, "## Lecture du jour\n\nObservations disponibles à %s ET. Cotations CME différées via Yahoo Finance.\n\n", localDate(cutoff))
+	if marketClosed {
+		doc.MarketClosed = true
+		doc.Title = "Récap NQ / ES · marché fermé · " + cutoff.In(newYork).Format("2006-01-02")
+		draft.WriteString("## Récapitulatif de marché fermé\n\nLa séance Globex est fermée selon les horaires CME. Les cours indiqués sont les dernières observations différées disponibles.\n\n")
+		doc.Sources = append(doc.Sources, Source{Label: "CME Group · horaires Globex", URL: cmeScheduleURL})
+	} else {
+		draft.WriteString("## Lecture du jour\n\n")
+	}
+	fmt.Fprintf(&draft, "Observations disponibles à %s ET. Cotations CME différées via Yahoo Finance.\n\n", localDate(cutoff))
 	fmt.Fprintf(&draft, "- **Mode** %s.\n\n", market.modeLabel())
 	calendar.writeSection(&draft, cutoff)
 	hasContext := note != "" || len(feed.items) != 0 || len(calendar.Events) != 0 || len(discordContext(news)) != 0
 	views := [2]modelView{assessed.NQ, assessed.ES}
 	for index, obs := range observations {
 		fmt.Fprintf(&draft, "## %s · %s\n\n- **Dernière observation** ", obs.symbol, obs.name)
-		if obs.quote != nil {
-			fmt.Fprintf(&draft, "%s points au %s ET (%s=F).\n", formatPrice(obs.quote.price), localDate(obs.quote.time), obs.symbol)
+		shownQuote := obs.quote
+		if marketClosed && shownQuote == nil {
+			shownQuote = obs.lastSeenQuote
+		}
+		if shownQuote != nil {
+			fmt.Fprintf(&draft, "%s points au %s ET (%s=F).\n", formatPrice(shownQuote.price), localDate(shownQuote.time), obs.symbol)
 		} else {
 			fmt.Fprintln(&draft, obs.message)
 		}
@@ -341,9 +360,13 @@ func render(observations [2]observation, assessed assessment, note string, sourc
 			draft.WriteString("- **Séance RTH** série complète indisponible.\n")
 		}
 		market.writeInstrument(&draft, obs.symbol)
-		view := views[index]
-		fmt.Fprintf(&draft, "- **Vue** %s\n- **À surveiller** %s\n\n", view.reading(obs), view.watchText(obs, hasContext, market.instruments[obs.symbol]))
-		if obs.quote != nil || obs.session != nil {
+		if marketClosed {
+			draft.WriteByte('\n')
+		} else {
+			view := views[index]
+			fmt.Fprintf(&draft, "- **Vue** %s\n- **À surveiller** %s\n\n", view.reading(obs), view.watchText(obs, hasContext, market.instruments[obs.symbol]))
+		}
+		if shownQuote != nil || obs.session != nil {
 			doc.Sources = append(doc.Sources, obs.source())
 		}
 	}
@@ -368,10 +391,14 @@ func render(observations [2]observation, assessed assessment, note string, sourc
 		doc.Sources = append(doc.Sources, *source)
 	}
 	market.writeLimits(&draft, &doc)
-	if market.mode == PublicGEX {
+	if hasPublicGEX {
 		draft.WriteString("- Le relevé GEX public est consultable dans Brief Studio.\n")
 	}
-	draft.WriteString("- Lecture descriptive des données en retard. Analyse sans ordre ni objectif de prix.")
+	if marketClosed {
+		draft.WriteString("- Récapitulatif factuel sans analyse directionnelle.")
+	} else {
+		draft.WriteString("- Lecture descriptive des données en retard. Analyse sans ordre ni objectif de prix.")
+	}
 	doc.Text = draft.String()
 	return doc
 }

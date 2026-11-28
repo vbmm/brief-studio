@@ -87,7 +87,7 @@ func TestNoInferenceWithoutMarketData(t *testing.T) {
 		return "", nil
 	}, func(_ context.Context, _, _ string, _ int64) ([]byte, error) {
 		return nil, errors.New("provider unavailable")
-	}, time.Now)
+	}, func() time.Time { return dateAt("2026-11-24T14:00:00Z") })
 	if err == nil || !strings.Contains(err.Error(), "Aucune cotation récente") {
 		t.Fatalf("expected actionable missing quotes error, got %v", err)
 	}

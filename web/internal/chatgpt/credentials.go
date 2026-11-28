@@ -62,7 +62,7 @@ func (c *Client) RestoreSession(hostID string, store sessionvault.Store) (*Sessi
 	}
 	lifetime, cancel := context.WithCancel(context.Background())
 	return &Session{profile: profile, clientID: record.ClientID, hostID: hostID, idToken: record.IDToken,
-		tokens: saved, store: store, remembered: saved.access != "", lifetime: lifetime, cancel: cancel}, nil
+		tokens: saved, store: store, remembered: saved.access != "", now: c.now, lifetime: lifetime, cancel: cancel}, nil
 }
 
 // Remember stores the verified registration and tokens as a single record.
@@ -74,17 +74,83 @@ func (s *Session) Remember(store sessionvault.Store) {
 	s.persistLocked()
 }
 
-// Status reports account state without exposing credentials or account keys.
-func (s *Session) Status() (profile Profile, connected, remembered bool) {
+type PersistenceStatus string
+
+const (
+	PersistenceSignedOut        PersistenceStatus = "signed-out"
+	PersistenceRemembered       PersistenceStatus = "remembered"
+	PersistenceTemporary        PersistenceStatus = "temporary"
+	PersistenceVaultUnavailable PersistenceStatus = "vault-unavailable"
+	PersistenceReauthNeeded     PersistenceStatus = "reauth-needed"
+)
+
+// SessionState is safe to return to the local browser. The retry capability
+// refers only to a local vault that can be tried without signing in again.
+type SessionState struct {
+	Profile          Profile
+	Connected        bool
+	Remembered       bool
+	Persistence      PersistenceStatus
+	CanRetryRemember bool
+}
+
+func (s *Session) State() SessionState {
 	if s == nil {
-		return Profile{}, false, false
+		return SessionState{Persistence: PersistenceSignedOut}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.lifetime.Err() != nil || s.tokens.access == "" {
-		return Profile{}, false, false
+	return s.stateLocked()
+}
+
+func (s *Session) stateLocked() SessionState {
+	if s.lifetime == nil || s.lifetime.Err() != nil {
+		return SessionState{Persistence: PersistenceSignedOut}
 	}
-	return s.profile, true, s.remembered
+	if !s.tokens.usable(s.currentTime()) {
+		return SessionState{Persistence: PersistenceReauthNeeded}
+	}
+	state := SessionState{Profile: s.profile, Connected: true}
+	switch {
+	case s.tokens.refresh == "":
+		state.Persistence = PersistenceTemporary
+	case s.remembered:
+		state.Remembered = true
+		state.Persistence = PersistenceRemembered
+	default:
+		state.Persistence = PersistenceVaultUnavailable
+		state.CanRetryRemember = s.store != nil
+	}
+	return state
+}
+
+// Status reports account state without exposing credentials or account keys.
+func (s *Session) Status() (profile Profile, connected, remembered bool) {
+	state := s.State()
+	return state.Profile, state.Connected, state.Remembered
+}
+
+// RetryRemember attempts one local vault save with the current refreshable
+// grant. It does not send an OAuth request or prompt for an account password.
+func (s *Session) RetryRemember(ctx context.Context) PersistenceStatus {
+	if s == nil {
+		return PersistenceSignedOut
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state := s.stateLocked()
+	if state.CanRetryRemember && ctx.Err() == nil {
+		s.persistLocked()
+		state = s.stateLocked()
+	}
+	return state.Persistence
+}
+
+func (s *Session) currentTime() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 // ScheduleOwner binds local consent to this verified registration. Never
@@ -95,7 +161,7 @@ func (s *Session) ScheduleOwner() string {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.lifetime.Err() != nil || s.tokens.access == "" || !s.tokens.canUsePlan() ||
+	if s.lifetime == nil || s.lifetime.Err() != nil || !s.tokens.usable(s.currentTime()) || !s.tokens.canUsePlan() ||
 		!uuidHost.MatchString(s.hostID) || !clientID.MatchString(s.clientID) || !validSubject(s.profile.subject) {
 		return ""
 	}

@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const shell = { account: null, selected: null, loadingBrief: 0, loadingModels: 0, generating: false };
+const shell = { account: null, selected: null, loadingBrief: 0, loadingModels: 0, generating: false, marketRecap: false };
 const labelDate = new Intl.DateTimeFormat("fr-FR", { dateStyle: "long", timeStyle: "short" });
 const textBytes = new TextEncoder();
 const idPattern = /^[A-Za-z0-9_-]{1,128}$/;
@@ -246,7 +246,8 @@ function ownBrief(id, brief) {
   $("brief-date").textContent = date;
   $("brief-date").hidden = !date;
   if (date) $("brief-date").dateTime = brief.generatedAt;
-  $("demo-tag").hidden = id !== "sample";
+  $("demo-tag").hidden = id !== "sample" && brief.marketClosed !== true;
+  $("demo-tag").textContent = id === "sample" ? "Exemple" : "Marché fermé";
   $("brief-text").replaceChildren(content);
   $("toc").hidden = !contents.childNodes.length;
   $("toc-items").replaceChildren(contents);
@@ -309,11 +310,22 @@ function syncAccount(state) {
       ? "Autorise de nouveau ton compte ChatGPT pour continuer."
       : "Connecte ton compte pour rédiger des briefs avec ton forfait ChatGPT.";
   const persistence = $("account-persistence");
-  persistence.textContent = state.remembered ? "Connexion conservée sur cet ordinateur."
-    : state.connected ? "Connexion active pour ce lancement seulement."
-      : state.storageWarning || "";
+  const persistenceMessages = {
+    remembered: "Connexion conservée sur cet ordinateur.",
+    temporary: "Session temporaire accordée par OpenAI. Reconnecte-toi à son expiration.",
+    "vault-unavailable": "Session active. Le coffre système n’a pas pu conserver la connexion.",
+    "reauth-needed": "Reconnecte ton compte ChatGPT pour continuer."
+  };
+  persistence.textContent = persistenceMessages[state.persistence] || state.storageWarning || "";
   persistence.hidden = persistence.textContent === "";
+  const reconnect = state.persistence === "reauth-needed";
+  const signinLabel = reconnect ? "Reconnecter ChatGPT" : "Continuer avec ChatGPT";
+  $("account-connect").textContent = signinLabel;
+  $("composer-connect").textContent = signinLabel;
+  $("needs-account").textContent = reconnect ? "Reconnecte ton compte ChatGPT pour générer un brief."
+    : "Connecte ton compte ChatGPT pour générer une lecture de marché NQ / ES.";
   $("account-signin").hidden = state.connected === true;
+  $("account-remember").hidden = state.canRetryRemember !== true;
   $("signout-button").hidden = state.hasAccount !== true;
   $("version").textContent = typeof state.version === "string" ? "v" + state.version : "";
 }
@@ -357,27 +369,49 @@ async function start() {
 async function openComposer() {
   const attempt = ++shell.loadingModels;
   const dialog = $("composer");
-  const connected = shell.account?.connected === true;
-  const allowed = shell.account?.profile?.canUsePlan === true;
+  const picker = $("model-picker");
+  shell.marketRecap = false;
   $("generator").hidden = true;
   $("composer-cancel-actions").hidden = false;
-  $("needs-account").hidden = connected;
-  $("composer-signin").hidden = connected;
-  status("composer-status");
+  $("needs-account").hidden = true;
+  $("composer-signin").hidden = true;
+  status("composer-status", "Vérification de la séance…");
   dialog.showModal();
-  if (!connected) return;
-  if (!allowed) {
-    status("composer-status", "Ce compte ChatGPT n’autorise pas la génération dans Brief Studio.", "error");
-    return;
-  }
-  $("gex-mode").value = "without";
-  showGexCoverage();
-  void refreshMarketSnapshot().catch(() => {});
-  status("composer-status", "Chargement des modèles…");
   try {
+    const state = await api("/api/state");
+    if (!dialog.open || attempt !== shell.loadingModels) return;
+    syncAccount(state);
+    const recap = state.marketClosed === true;
+    shell.marketRecap = recap;
+    $("model-field").hidden = recap;
+    picker.disabled = recap;
+    $("generate-button").textContent = recap ? "Générer la synthèse" : "Générer";
+    $("note-privacy").textContent = recap
+      ? "La note est conservée dans la synthèse et son export."
+      : "La note est transmise à OpenAI et incluse dans le brief exporté.";
+    if (!recap && !state.connected) {
+      $("needs-account").hidden = false;
+      $("composer-signin").hidden = false;
+      status("composer-status");
+      return;
+    }
+    if (!recap && state.profile?.canUsePlan !== true) {
+      status("composer-status", "Ce compte ChatGPT n’autorise pas la génération dans Brief Studio.", "error");
+      return;
+    }
+    $("gex-mode").value = "without";
+    showGexCoverage();
+    void refreshMarketSnapshot().catch(() => {});
+    if (recap) {
+      $("generator").hidden = false;
+      $("composer-cancel-actions").hidden = true;
+      status("composer-status", "Marché fermé. La synthèse utilise les dernières observations vérifiées.");
+      $("generate-button").focus();
+      return;
+    }
+    status("composer-status", "Chargement des modèles…");
     const models = await api("/api/models");
     if (!dialog.open || attempt !== shell.loadingModels) return;
-    const picker = $("model-picker");
     const previous = picker.value;
     const choices = Array.isArray(models) ? models.filter(
       (model) => typeof model?.id === "string" && model.id.trim() && model.id.length < 160
@@ -420,11 +454,12 @@ async function showComposerError(error) {
 async function generate(event) {
   event.preventDefault();
   if (shell.generating) return;
-  const model = $("model-picker").value;
+  const marketRecap = shell.marketRecap;
+  const model = marketRecap ? "" : $("model-picker").value;
   const note = $("note").value.trim();
   const sourceURL = $("source-url").value.trim();
   const gexMode = $("gex-mode").value;
-  if (!model) {
+  if (!marketRecap && !model) {
     status("composer-status", "Choisis un modèle ChatGPT.", "error");
     return;
   }
@@ -436,20 +471,20 @@ async function generate(event) {
     status("composer-status", "Ajoute une note et un lien HTTPS valide pour citer cette source.", "error");
     return;
   }
-  const controls = Array.from($("generator").querySelectorAll("button, select, input, textarea"));
+  const controls = $("generator").querySelectorAll("button:enabled, select:enabled, input:enabled, textarea:enabled");
   for (const control of controls) control.disabled = true;
   shell.generating = true;
   $("generator").setAttribute("aria-busy", "true");
-  status("composer-status", "Collecte des données et rédaction du brief…");
+  status("composer-status", marketRecap ? "Préparation de la synthèse…" : "Collecte des données et rédaction du brief…");
   try {
-    const result = await api("/api/generate", "POST", { model, note, sourceURL, gexMode });
+    const result = await api("/api/generate", "POST", { model, note, sourceURL, gexMode, marketRecap });
     ++shell.loadingBrief;
     ownBrief(result?.id, result?.document);
     $("note").value = "";
     $("source-url").value = "";
     $("composer").close();
     $("brief").focus();
-    status("notice", "Brief enregistré.");
+    status("notice", result.document.marketClosed ? "Synthèse enregistrée." : "Brief enregistré.");
     try {
       await refreshArchive();
     } catch (error) {
@@ -462,6 +497,23 @@ async function generate(event) {
     shell.generating = false;
     $("generator").removeAttribute("aria-busy");
     for (const control of controls) control.disabled = false;
+  }
+}
+
+async function rememberAccount() {
+  const button = $("account-remember");
+  button.disabled = true;
+  status("account-status", "Sauvegarde de la connexion…");
+  try {
+    const state = await api("/api/account/remember", "POST", {});
+    syncAccount(state);
+    status("account-status", state.remembered ? "Connexion conservée."
+      : state.connected ? "Vérifie l’accès au coffre système pour conserver cette session."
+        : "Reconnecte ton compte ChatGPT pour continuer.", state.remembered ? "info" : "error");
+  } catch (error) {
+    status("account-status", errorMessage(error), "error");
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -626,7 +678,7 @@ function showGexCoverage() {
     : "Les niveaux futures importés sont utilisables quel que soit le mode GEX.";
   let message = guidance;
   if (mode === "public") {
-    message = "FlashAlpha est consulté à la génération. Relevé différé de la séance précédente sur NQ et ES, consultable dans Brief Studio.";
+    message = "Le relevé FlashAlpha différé s’affiche dans Brief Studio quand il est disponible.";
     if (levels.length) message += " " + guidance;
   } else if (mode === "with" && gamma.length > 0) {
     const missing = ["NQ", "ES"].filter((symbol) => !gamma.includes(symbol));
@@ -1055,8 +1107,10 @@ $("gex-mode").addEventListener("change", showGexCoverage);
 $("account-button").addEventListener("click", () => {
   status("account-status");
   $("account").showModal();
+  void api("/api/state").then(syncAccount).catch((error) => status("account-status", errorMessage(error), "error"));
 });
 $("account-close").addEventListener("click", () => $("account").close());
+$("account-remember").addEventListener("click", () => { void rememberAccount(); });
 $("signout-button").addEventListener("click", () => { void signOut(); });
 $("updates-button").addEventListener("click", () => {
   $("updates-version").textContent = "Version installée " + (shell.account?.version || "inconnue");

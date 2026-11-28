@@ -2,7 +2,7 @@
 set -eu
 
 cd "$(dirname "$0")/.."
-version=${BRIEF_VERSION:-0.3.7}
+version=${BRIEF_VERSION:-0.3.8}
 if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
     printf '%s\n' 'BRIEF_VERSION doit avoir le format 1.2.3.' >&2
     exit 1
@@ -72,12 +72,13 @@ Brief Studio Web $version · $label $architecture
 1. Décompresse ce dossier, puis ouvre $launcher.
 2. Ton navigateur affiche Brief Studio. Si besoin, copie l’adresse affichée
    dans la fenêtre de lancement dans la barre d’adresse du navigateur.
-3. Choisis Nouveau brief, puis Continuer avec ChatGPT. La connexion revient
-   dans le même onglet. Choisis un modèle et lance Générer.
+3. Choisis Nouveau brief. En séance, connecte ton compte ChatGPT, choisis
+   un modèle et lance Générer. Lorsque le marché est fermé, Générer la
+   synthèse ouvre une lecture factuelle des dernières observations.
 4. Pour ajouter Discord ou X, ouvre Sources dans Brief Studio, renseigne tes
    accès, puis clique sur Enregistrer et Tester.
-5. Dans Nouveau brief, choisis Avec GEX public pour lire le relevé différé
-   de FlashAlpha dans l’app. Pour utiliser tes propres repères, importe
+5. Choisis Afficher le GEX public pour lire le relevé différé de FlashAlpha
+   dans l’app lorsqu’il est disponible. Pour utiliser tes propres repères, importe
    le fichier dans Sources et choisis Avec GEX importé.
 6. Dans Planification, choisis les jours, l’heure, le fuseau et le modèle.
    Autorise les générations automatiques avec ton forfait ChatGPT.

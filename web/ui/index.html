@@ -66,10 +66,10 @@
       <p id="composer-status" class="notice" role="status" aria-live="polite" hidden></p>
       <p id="needs-account" hidden>Connecte ton compte ChatGPT pour générer une lecture de marché NQ / ES.</p>
       <form method="post" action="/auth/start" id="composer-signin" hidden>
-        <button class="button button-primary" type="submit">Continuer avec ChatGPT <span aria-hidden="true">↗</span></button>
+        <button class="button button-primary" id="composer-connect" type="submit">Continuer avec ChatGPT</button>
       </form>
       <form id="generator" hidden>
-        <div class="field">
+        <div class="field" id="model-field">
           <label for="model-picker">Modèle ChatGPT</label>
           <select id="model-picker" name="model" required></select>
         </div>
@@ -78,7 +78,7 @@
           <select id="gex-mode" name="gexMode" aria-describedby="gex-coverage">
             <option value="without">Sans GEX</option>
             <option value="with">Avec GEX importé</option>
-            <option value="public">Avec GEX public</option>
+            <option value="public">Afficher le GEX public</option>
           </select>
           <small class="fine-print" id="gex-coverage" aria-live="polite">Les niveaux futures importés sont disponibles quel que soit le mode GEX.</small>
         </div>
@@ -90,7 +90,7 @@
           <label for="source-url">Lien de la source <span>· facultatif</span></label>
           <input id="source-url" name="sourceURL" type="url" maxlength="2048" placeholder="https://…">
         </div>
-        <p class="fine-print">La note est transmise à OpenAI et incluse dans le brief exporté.</p>
+        <p class="fine-print" id="note-privacy">La note est transmise à OpenAI et incluse dans le brief exporté.</p>
         <div class="form-actions">
           <button class="button button-secondary" id="composer-close" type="button">Fermer</button>
           <button class="button button-primary" id="generate-button" type="submit">Générer</button>
@@ -238,7 +238,7 @@
             <select id="schedule-gex">
               <option value="without">Sans GEX</option>
               <option value="with">Avec GEX importé</option>
-              <option value="public">Avec GEX public</option>
+              <option value="public">Afficher le GEX public</option>
             </select>
           </div>
           <label class="schedule-consent">
@@ -262,10 +262,11 @@
       <p class="fine-print" id="account-persistence" hidden></p>
       <p class="notice" id="account-status" role="status" aria-live="polite" hidden></p>
       <form method="post" action="/auth/start" id="account-signin" hidden>
-        <button class="button button-primary" type="submit">Continuer avec ChatGPT <span aria-hidden="true">↗</span></button>
+        <button class="button button-primary" id="account-connect" type="submit">Continuer avec ChatGPT</button>
       </form>
       <div class="form-actions">
         <button class="button button-secondary" id="account-close" type="button">Fermer</button>
+        <button class="button button-secondary" id="account-remember" type="button" hidden>Ressayer la sauvegarde</button>
         <button class="button button-secondary" id="signout-button" type="button" hidden>Déconnecter</button>
       </div>
     </div>

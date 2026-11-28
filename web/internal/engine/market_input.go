@@ -83,7 +83,7 @@ func (m marketInput) modeLabel() string {
 		return "Avec GEX importé"
 	}
 	if m.mode == PublicGEX {
-		return "Avec GEX public"
+		return "Sans GEX · panneau public facultatif"
 	}
 	return "Sans GEX"
 }

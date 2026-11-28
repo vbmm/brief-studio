@@ -49,6 +49,7 @@ func (s *studioServer) handler() http.Handler {
 	mux.HandleFunc("GET /auth/callback", s.withSession(false, s.finishAuth))
 	mux.HandleFunc("GET /api/state", s.withSession(true, s.state))
 	mux.HandleFunc("GET /api/models", s.withSession(true, s.listModels))
+	mux.HandleFunc("POST /api/account/remember", s.withSession(true, s.rememberAccount))
 	mux.HandleFunc("POST /api/signout", s.withSession(true, s.signOut))
 	mux.HandleFunc("POST /api/generate", s.withSession(true, s.generate))
 	mux.HandleFunc("GET /api/schedule", s.withSession(true, s.scheduleState))
@@ -196,31 +197,47 @@ func (s *studioServer) state(w http.ResponseWriter, _ *http.Request) {
 	s.mu.Lock()
 	session, authError := s.session, s.authError
 	s.mu.Unlock()
-	profile, connected, remembered := session.Status()
+	account := session.State()
 	response := struct {
-		Connected      bool            `json:"connected"`
-		HasAccount     bool            `json:"hasAccount"`
-		Remembered     bool            `json:"remembered"`
-		Profile        chatgpt.Profile `json:"profile"`
-		AuthError      string          `json:"authError,omitempty"`
-		StorageWarning string          `json:"storageWarning,omitempty"`
-		Version        string          `json:"version"`
-	}{connected, session != nil, remembered, profile, authError, s.storageWarning, version}
+		Connected      bool                      `json:"connected"`
+		HasAccount     bool                      `json:"hasAccount"`
+		Remembered     bool                      `json:"remembered"`
+		Persistence    chatgpt.PersistenceStatus `json:"persistence"`
+		CanRetry       bool                      `json:"canRetryRemember"`
+		MarketClosed   bool                      `json:"marketClosed"`
+		Profile        chatgpt.Profile           `json:"profile"`
+		AuthError      string                    `json:"authError,omitempty"`
+		StorageWarning string                    `json:"storageWarning,omitempty"`
+		Version        string                    `json:"version"`
+	}{
+		Connected: account.Connected, HasAccount: session != nil,
+		Remembered: account.Remembered, Persistence: account.Persistence, CanRetry: account.CanRetryRemember,
+		MarketClosed: engine.MarketClosed(time.Now()), Profile: account.Profile, AuthError: authError,
+		StorageWarning: s.storageWarning, Version: version,
+	}
 	writeJSON(w, http.StatusOK, response)
 }
 
-func (s *studioServer) takeOperation(w http.ResponseWriter, requirePlan bool) (*chatgpt.Session, bool) {
+type operationAccess uint8
+
+const (
+	localOperation operationAccess = iota
+	accountOperation
+	modelOperation
+)
+
+func (s *studioServer) takeOperation(w http.ResponseWriter, access operationAccess) (*chatgpt.Session, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.busy {
 		writeError(w, http.StatusConflict, "Une opération est déjà en cours.")
 		return nil, false
 	}
-	if s.session == nil {
+	if access != localOperation && s.session == nil {
 		writeError(w, http.StatusUnauthorized, "Connecte-toi à ChatGPT pour continuer.")
 		return nil, false
 	}
-	if requirePlan {
+	if access == modelOperation {
 		profile, connected, _ := s.session.Status()
 		if !connected {
 			writeError(w, http.StatusUnauthorized, chatgpt.ErrSessionExpired.Error())
@@ -242,7 +259,7 @@ func (s *studioServer) releaseOperation() {
 }
 
 func (s *studioServer) listModels(w http.ResponseWriter, r *http.Request) {
-	session, ok := s.takeOperation(w, true)
+	session, ok := s.takeOperation(w, modelOperation)
 	if !ok {
 		return
 	}
@@ -263,8 +280,22 @@ func (s *studioServer) listModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, models)
 }
 
+func (s *studioServer) rememberAccount(w http.ResponseWriter, r *http.Request) {
+	if readJSON(w, r, &struct{}{}) != nil {
+		writeError(w, http.StatusBadRequest, "Demande de sauvegarde invalide.")
+		return
+	}
+	session, ok := s.takeOperation(w, accountOperation)
+	if !ok {
+		return
+	}
+	defer s.releaseOperation()
+	session.RetryRemember(r.Context())
+	s.state(w, r)
+}
+
 func (s *studioServer) signOut(w http.ResponseWriter, r *http.Request) {
-	session, ok := s.takeOperation(w, false)
+	session, ok := s.takeOperation(w, accountOperation)
 	if !ok {
 		return
 	}
@@ -293,10 +324,11 @@ func (s *studioServer) signOut(w http.ResponseWriter, r *http.Request) {
 }
 
 type briefRequest struct {
-	Model     string         `json:"model"`
-	Note      string         `json:"note"`
-	SourceURL string         `json:"sourceURL"`
-	GEXMode   engine.GEXMode `json:"gexMode"`
+	Model       string         `json:"model"`
+	Note        string         `json:"note"`
+	SourceURL   string         `json:"sourceURL"`
+	GEXMode     engine.GEXMode `json:"gexMode"`
+	MarketRecap bool           `json:"marketRecap"`
 }
 
 var errArchiveSave = errors.New("Le brief n’a pas pu être enregistré sur cet ordinateur.")
@@ -311,25 +343,35 @@ func (s *studioServer) generate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Choisis un mode GEX valide.")
 		return
 	}
-	session, ok := s.takeOperation(w, true)
+	access := modelOperation
+	if req.MarketRecap {
+		access = localOperation
+		if !engine.MarketClosed(time.Now()) {
+			writeError(w, http.StatusConflict, engine.ErrMarketOpen.Error())
+			return
+		}
+	}
+	session, ok := s.takeOperation(w, access)
 	if !ok {
 		return
 	}
 	defer s.releaseOperation()
-	s.mu.Lock()
-	allowed := modelAvailable(s.models, req.Model)
-	s.mu.Unlock()
-	if !allowed {
-		writeError(w, http.StatusBadRequest, "Choisis un modèle disponible pour ton compte.")
-		return
+	if !req.MarketRecap {
+		s.mu.Lock()
+		allowed := modelAvailable(s.models, req.Model)
+		s.mu.Unlock()
+		if !allowed {
+			writeError(w, http.StatusBadRequest, "Choisis un modèle disponible pour ton compte.")
+			return
+		}
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 145*time.Second)
 	defer cancel()
 	id, doc, err := s.buildAndSaveBrief(ctx, session, req)
 	if err != nil {
 		switch {
-		case errors.Is(err, sources.ErrPublicGEXUnavailable):
-			writePublicGEXError(w, err)
+		case errors.Is(err, engine.ErrMarketOpen):
+			writeError(w, http.StatusConflict, err.Error())
 		case errors.Is(err, engine.ErrGEXUnavailable):
 			writeError(w, http.StatusUnprocessableEntity, err.Error())
 		case errors.Is(err, errArchiveSave):
@@ -364,15 +406,16 @@ func (s *studioServer) buildAndSaveBrief(ctx context.Context, session *chatgpt.S
 		News: s.gatherOptionalNews, Market: market, MarketReadFailed: marketErr != nil, GEXMode: req.GEXMode,
 	}
 	if req.GEXMode == engine.PublicGEX {
-		var err error
-		input.PublicGEX, err = s.readPublicGEX(ctx, cutoff)
-		if err != nil {
-			return "", engine.Document{}, err
+		// A missing public reading is displayed locally and never gates the brief.
+		input.PublicGEX, _ = s.readPublicGEX(ctx, cutoff)
+	}
+	var analyze func(context.Context, string) (string, error)
+	if !req.MarketRecap {
+		analyze = func(ctx context.Context, input string) (string, error) {
+			return s.client.Respond(ctx, session, req.Model, input)
 		}
 	}
-	doc, err := engine.GenerateWithSources(ctx, req.Note, req.SourceURL, func(ctx context.Context, input string) (string, error) {
-		return s.client.Respond(ctx, session, req.Model, input)
-	}, input)
+	doc, err := engine.GenerateWithSources(ctx, req.Note, req.SourceURL, analyze, input)
 	if err != nil {
 		return "", engine.Document{}, err
 	}
